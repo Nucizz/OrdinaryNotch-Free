@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Ordinary Notch Free</string>
+	<key>CFBundleExecutable</key>
+	<string>OrdinaryNotch</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon.icns</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.ordinary.notch.free</string>
+	<key>CFBundleName</key>
+	<string>Ordinary Notch Free</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSMultipleInstancesProhibited</key>
+	<true/>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Display and control the current track in Music and Spotify.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Show today's calendar events in your notch. Ordinary Notch does not edit your calendar.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Show a live mirrored camera preview in your notch.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright (c) 2026 Nucizz. MIT License.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Show your due reminders in your notch. Ordinary Notch does not edit reminders.</string>
+</dict>
+</plist>
