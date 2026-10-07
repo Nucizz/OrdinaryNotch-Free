@@ -6,6 +6,14 @@ Includes music playback and synced lyrics, timer and stopwatch, calendar and rem
 
 This repository contains Free source only. Face Unlock, fan control and its privileged helper, separate Work accounts, VPN integration, eye and water reminders, membership services, and the commercial updater are not included. The commercial app is maintained separately. This repository starts with a clean history; it is not a mirror of the commercial repository.
 
+## Download the app
+
+[Download Ordinary Notch for Mac](https://ordinary-notch-api.ordinary-notch-backend.workers.dev/download), or browse [official releases](https://github.com/Nucizz/OrdinaryNotch-Free/releases). Downloads and in-app updates use the same release files.
+
+The compiled app includes free features and optional paid Pro features. This repository’s MIT license covers the published Free source only; proprietary Pro components in the compiled app are not licensed under MIT. Premium source remains private. GitHub’s automatic “Source code” archives contain this Free source, not the full source of the compiled app.
+
+Releases are built from the private app repository and signed for Sparkle updates. Downloads currently use ad-hoc signing and are not Apple notarized. See the [website FAQ](https://ordinarynotch.vercel.app/#faq) for macOS opening instructions.
+
 ## Build
 
 Requires a Mac and Xcode with Swift 5.9 or newer. No paid service or premium repository is required to build.
