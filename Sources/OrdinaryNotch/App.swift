@@ -4,7 +4,15 @@ import Combine
 
 @main struct OrdinaryNotchFreeApp: App {
     @NSApplicationDelegateAdaptor(FreeAppDelegate.self) var delegate
-    var body: some Scene { Settings { FreeSettingsView(model: delegate.model, showClipboard: delegate.showClipboard) } }
+    var body: some Scene {
+        Settings { FreeSettingsView(model: delegate.model, showClipboard: delegate.showClipboard) }
+            .commands {
+                CommandGroup(replacing: .appSettings) {
+                    Button("Settings…") { delegate.openSettings() }
+                        .keyboardShortcut(",", modifiers: .command)
+                }
+            }
+    }
 }
 private final class FreePanel: NSPanel {
     override var canBecomeKey: Bool { true }
