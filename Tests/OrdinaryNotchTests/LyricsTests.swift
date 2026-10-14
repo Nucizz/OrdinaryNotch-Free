@@ -23,6 +23,7 @@ private struct PreviewLyrics: LyricsServing {
     var positionUpdates = 0
     func updatePosition() { positionUpdates += 1 }
     func command(_ command: String) {}
+    func seek(to seconds: Double) {}
     func stop() {}
 }
 final class LyricsTests: XCTestCase {

@@ -3,14 +3,32 @@ import SwiftUI
 /// Runtime display presentation, selected from hardware unless overridden in Developer mode.
 enum NotchStyle: String, CaseIterable { case notch, island }
 
+/// Shared dimensions for the expanded notch and its Settings preview.
+struct NotchExpandedLayout: Equatable {
+    var width: CGFloat = NotchGeometry.expandedSize.width
+    var headerHeight: CGFloat = 32
+    var contentPadding: CGFloat = NotchGeometry.expandedContentPadding
+    var reservedWidth: CGFloat = 180
+    var isIsland = false
+    var contentWidth: CGFloat { width - 2 * contentPadding }
+    func size(for tab: NotchTab) -> CGSize {
+        let height = tab == .mirror
+            ? headerHeight + contentWidth * 9 / 16 + 16 + NotchGeometry.detailHeadingHeight + NotchGeometry.detailContentGap
+            : max(NotchGeometry.expandedSize.height, headerHeight + 134)
+        return CGSize(width: width, height: height)
+    }
+}
+
 /// Measurements informed by Boring Notch's published sizing defaults.
 /// Geometry is constructed locally with circular, tangent-continuous shoulders.
 enum NotchGeometry {
     static let expandedSize = CGSize(width: 640, height: 166)
     static let islandExpandedWidth: CGFloat = 560
-    static let islandIdleWidth: CGFloat = 160
+    static let islandIdleWidth: CGFloat = 96
+    static let islandMinimumWingWidth: CGFloat = 32
     static let islandCompactHeight: CGFloat = 36
-    static let islandCenterWidth: CGFloat = 80
+    static let islandCenterWidth: CGFloat = 32
+    static let islandOuterPadding: CGFloat = 8
     static let islandTopInset: CGFloat = 8
     static let islandSeparation: CGFloat = 8
     static let canvasMargin: CGFloat = 24
@@ -35,6 +53,7 @@ enum NotchGeometry {
         max(0, radius - max(0, padding))
     }
     static let openSpring = Animation.spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)
+    static let islandSplitSpring = Animation.spring(response: 0.55, dampingFraction: 0.85, blendDuration: 0)
     static let closeSpring = Animation.spring(response: 0.45, dampingFraction: 1, blendDuration: 0)
 
     static func compactWidth(hardwareWidth: CGFloat, wingWidth: CGFloat) -> CGFloat {

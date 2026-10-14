@@ -40,6 +40,7 @@ struct NotchSettings: Codable, Equatable {
     var developerDisplayOverride: DeveloperDisplayOverride = .automatic
     var highlightPhysicalNotch = false
     var showMenuBarIcon = true
+    var hapticFeedback = true
     var openOnHover = true
     var openDelay = 0.10
     var closeDelay = 0.15
@@ -55,6 +56,14 @@ struct NotchSettings: Codable, Equatable {
     var codeAccount: CodeAccountFilter = .personal
     var codeLayout: CodeLayout?
     var passAgentQuestions = true
+    var lockScreenActivity: LockScreenActivityMode = .screen
+    var fullScreenVisibility: FullScreenVisibility = .hideApps
+    var startingTab: NotchTab = .overview
+    var tabLayout = NotchTabLayout()
+    var hiddenTabs: Set<String> = []
+    var defaultMediaPlayer: DefaultMediaPlayer = .none
+    var defaultMediaApplicationPath: String?
+    var defaultMediaSelection: DefaultMediaSelection { .init(player: defaultMediaPlayer, applicationPath: defaultMediaApplicationPath) }
     var showPausedMedia = true
     var lyricsPresentation: LyricsPresentation = .integrated
     var lyricsTimingOffset: Double = 0
@@ -68,6 +77,7 @@ struct NotchSettings: Codable, Equatable {
 
     init() {}
     private enum CodingKeys: String, CodingKey {
+        case hapticFeedback, lockScreenActivity, fullScreenVisibility, startingTab, tabLayout, hiddenTabs, defaultMediaPlayer, defaultMediaApplicationPath
         case clipboardHistoryEnabled
         case showDeveloperMenu, highlightPhysicalNotch, developerDisplayOverride
         case showMenuBarIcon, openOnHover, openDelay, closeDelay, restoreFocus, rememberLastTab, reduceMotion
@@ -80,6 +90,16 @@ struct NotchSettings: Codable, Equatable {
     init(from decoder: Decoder) throws {
         self.init()
         let saved = try decoder.container(keyedBy: CodingKeys.self)
+        hapticFeedback = try saved.decodeIfPresent(Bool.self, forKey: .hapticFeedback) ?? true
+        if saved.contains(.lockScreenActivity) {
+            lockScreenActivity = (try? saved.decode(String.self, forKey: .lockScreenActivity)).flatMap(LockScreenActivityMode.init(rawValue:)) ?? .none
+        } else { lockScreenActivity = .screen }
+        fullScreenVisibility = (try saved.decodeIfPresent(String.self, forKey: .fullScreenVisibility)).flatMap(FullScreenVisibility.init(rawValue:)) ?? .hideApps
+        startingTab = (try saved.decodeIfPresent(String.self, forKey: .startingTab)).flatMap(NotchTab.init(rawValue:)) ?? .overview
+        tabLayout = try saved.decodeIfPresent(NotchTabLayout.self, forKey: .tabLayout) ?? .init()
+        hiddenTabs = try saved.decodeIfPresent(Set<String>.self, forKey: .hiddenTabs) ?? []
+        defaultMediaPlayer = (try saved.decodeIfPresent(String.self, forKey: .defaultMediaPlayer)).flatMap(DefaultMediaPlayer.init(rawValue:)) ?? .none
+        defaultMediaApplicationPath = try saved.decodeIfPresent(String.self, forKey: .defaultMediaApplicationPath)
         lyricsTimingOffset = try saved.decodeIfPresent(Double.self, forKey: .lyricsTimingOffset) ?? 0
         lyricsPresentation = (try saved.decodeIfPresent(String.self, forKey: .lyricsPresentation)).flatMap(LyricsPresentation.init(rawValue:)) ?? .integrated
         clipboardHistoryEnabled = try saved.decodeIfPresent(Bool.self, forKey: .clipboardHistoryEnabled) ?? false
@@ -129,8 +149,11 @@ struct NotchSettings: Codable, Equatable {
         result.lyricsTimingOffset = lyricsTimingOffset.isFinite ? min(5, max(-5, lyricsTimingOffset)) : 0
         result.openDelay = openDelay.isFinite ? min(1, max(0, openDelay)) : defaults.openDelay
         result.closeDelay = closeDelay.isFinite ? min(2, max(0.1, closeDelay)) : defaults.closeDelay
-        result.timerPresets = timerPresets.count == 9 ? timerPresets.map { min(10_800, max(30, ($0 / 30) * 30)) } : defaults.timerPresets
+        result.timerPresets = timerPresets.count == 9 ? timerPresets.map { min(DurationText.timerRange.upperBound, max(DurationText.timerRange.lowerBound, $0)) } : defaults.timerPresets
         result.timerPresetsUseSeconds = true
+        result.tabLayout = tabLayout.normalized()
+        result.hiddenTabs.formIntersection(Set(NotchTab.allCases.map(\.rawValue)))
+        if NotchTab.allCases.allSatisfy({ result.hiddenTabs.contains($0.rawValue) }) { result.hiddenTabs.remove(NotchTab.overview.rawValue) }
         return result
     }
 }

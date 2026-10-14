@@ -6,6 +6,15 @@ final class ClaudePromptService: @unchecked Sendable {
     private struct Pending { let prompt: AgentPrompt; let fd: Int32; let input: [String: Any]; var reply: [String: Any]? }
     private let lock = NSLock()
     private var pending: [String: Pending] = [:]
+    private var foreground = ForegroundActivityContext()
+    func updateForeground(_ context: ForegroundActivityContext) {
+        lock.lock(); defer { lock.unlock() }
+        foreground = context
+        // Release the hook, not the permission: Claude presents its original request.
+        for id in pending.keys where pending[id]?.reply == nil {
+            if let item = pending[id], context.suppresses(item.prompt.task) { pending[id]?.reply = [:] }
+        }
+    }
     private var profiles: [CodeProfile] = []
     private var configurationGeneration = UUID()
     private var listener: Int32 = -1
@@ -145,7 +154,8 @@ final class ClaudePromptService: @unchecked Sendable {
             prompt.detail = tool + "\n\n" + (value["cwd"] as? String ?? "") + "\n\n" + String(decoding: bytes, as: UTF8.self)
         }
         lock.lock()
-        guard configuration == configurationGeneration, profiles.contains(where: { $0.id == profile.id }) else {
+        guard configuration == configurationGeneration, profiles.contains(where: { $0.id == profile.id }),
+              !foreground.suppresses(task) else {
             lock.unlock(); try? AgentActionWire.send([:], to: fd); return
         }
         pending[id] = Pending(prompt: prompt, fd: fd, input: input); lock.unlock()

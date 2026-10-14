@@ -8,9 +8,14 @@ import sys
 
 root = Path(__file__).resolve().parent.parent
 identity = os.environ.get("SIGNING_IDENTITY", "-")
-subprocess.run(["swift", "build", "-c", "release"], cwd=root, check=True)
-bin_path = Path(subprocess.check_output(["swift", "build", "-c", "release", "--show-bin-path"], cwd=root, text=True).strip())
-app = root / "build/Ordinary Notch Free.app"
+scratch = Path(os.environ.get("ORDINARY_FREE_BUILD_DIR", str(root / ".build")))
+flags = ["-c", "release", "--disable-sandbox", "--scratch-path", str(scratch)]
+sdk = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True).strip()
+if "-Xclang-linker" in subprocess.check_output(["swiftc", "-help-hidden"], text=True):
+    flags += ["-Xswiftc", "-Xclang-linker", "-Xswiftc", "-isysroot", "-Xswiftc", "-Xclang-linker", "-Xswiftc", sdk]
+subprocess.run(["swift", "build", *flags], cwd=root, check=True)
+bin_path = Path(subprocess.check_output(["swift", "build", *flags, "--show-bin-path"], cwd=root, text=True).strip())
+app = Path(os.environ.get("ORDINARY_FREE_APP_OUTPUT", str(root / "build/Ordinary Notch Free.app")))
 if app.exists():
     shutil.rmtree(app)
 contents = app / "Contents"

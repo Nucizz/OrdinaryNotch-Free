@@ -57,7 +57,7 @@ final class AgendaService: AgendaServing {
         }
         requesting.insert(entity)
         do {
-            let granted = try await worker.request(entity)
+            let granted = try await SystemPromptPresentationService.shared.withPrompt { try await worker.request(entity) }
             requesting.remove(entity)
             recentGrants[kind] = granted ? Date().addingTimeInterval(10) : nil
             // The completion result is authoritative even before the global cache catches up.

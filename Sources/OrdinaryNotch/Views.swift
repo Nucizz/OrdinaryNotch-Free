@@ -98,7 +98,7 @@ struct NotchView: View {
         .overlay(alignment: .top) {
             ZStack(alignment: .top) {
                 if model.floatingLyricsVisible {
-                    FloatingLyricsView(music: model.music, notchWidth: model.mainSurfaceWidth)
+                    FloatingLyricsLayer(music: model.music, width: model.mainSurfaceWidth, top: 0, glowHeight: 72, textWidth: model.floatingLyricsWidth)
                         .frame(width: model.floatingLyricsWidth)
                         .transition(lyricsTransition)
                 }
@@ -147,11 +147,12 @@ struct NotchView: View {
     @ViewBuilder private var briefAlert: some View {
         if let notice = model.battery.notice { BatteryNoticeView(notice: notice) }
         else if let notice = model.thermal.notice { ThermalNoticeView(notice: notice) }
+        else if let notice = model.toast.notice { NotchToastView(symbol: notice.symbol, title: notice.title, detail: notice.detail, accent: .white) }
     }
     var expandedContent: some View {
         ZStack {
             if model.welcomeVisible {
-                NotchWelcomeView(reduceMotion: reduceMotion, getStarted: model.startFromWelcome)
+                NotchWelcomeView(reduceMotion: reduceMotion, getStarted: model.startFromWelcome, skip: model.dismissWelcome)
             } else if let prompt = model.agentActions.current {
                 AgentPromptView(model: model.agentActions, prompt: prompt, openTask: { task in
                     model.codexMonitor.openTask(task)
@@ -183,40 +184,16 @@ struct NotchView: View {
         .padding(.horizontal, model.contentPadding)
         .padding(.vertical, 8)
     }
-    @ViewBuilder private var tabDetails: some View {
-        switch model.detailTab {
-        case .overview: overview
-        case .focus: FocusView(model: model)
-        case .shelf: FileShelfView(model: model.fileShelf)
-        case .codex: CodeLayoutView(channels: model.codeChannels, dashboard: model.codeDashboard, now: model.now,
-                                   visible: model.expanded, openTask: model.codexMonitor.openTask,
-                                   openProvider: model.openCodeProvider, navigationError: model.codexMonitor.navigationError)
-        case .mirror: MirrorView(camera: model.camera)
-        case .fans: FanTabView(service: model.fans)
-
-        }
+    private var tabDetails: some View {
+        NotchTabContentView(tab: model.detailTab, model: model)
     }
     var header: some View {
-        HStack(spacing: 0) {
-            HStack(spacing: headerSlotSpacing) {
-                tabSlot(.overview)
-                tabSlot(.focus)
-                tabSlot(.codex)
-                tabSlot(.shelf)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Color.clear.frame(width: model.reservedNotchWidth + 8)
-            HStack(spacing: headerSlotSpacing) {
-                tabSlot(.fans)
-                tabSlot(.mirror)
-                Button { model.pinned.toggle() } label: {
-                    Image(systemName: model.pinned ? "pin.fill" : "pin")
-                        .foregroundStyle(model.pinned ? .white : muted).frame(width: headerSlotWidth, height: 26)
-                }.buttonStyle(NotchHoverButtonStyle()).help(model.pinned ? "Unpin panel" : "Keep expanded")
-                    .accessibilityLabel(model.pinned ? "Unpin panel" : "Keep expanded")
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-        }
+        NotchHeaderView(left: model.headerItems(.left), right: model.headerItems(.right),
+            selectedTab: model.detailTab, pinned: model.pinned,
+            visibility: model.preferences.values.fullScreenVisibility,
+            hasAgentRequests: !model.agentActions.prompts.isEmpty,
+            contentWidth: model.expandedWidth - 2 * model.contentPadding, reservedWidth: model.reservedNotchWidth,
+            activate: model.activateHeader)
     }
     private var headerWingWidth: CGFloat { (model.expandedWidth - 2 * model.contentPadding - model.reservedNotchWidth - 8) / 2 }
     private var headerSlotWidth: CGFloat { min(32, max(20, (headerWingWidth - 18) / 4)) }
@@ -261,7 +238,7 @@ struct NotchView: View {
     }
     var overview: some View {
         HStack(alignment: .top, spacing: model.isIsland ? 12 : 18) {
-            MusicView(music: model.music).frame(maxWidth: .infinity, alignment: .leading)
+            MusicView(music: model.music, preferences: model.preferences).frame(maxWidth: .infinity, alignment: .leading)
             Rectangle().fill(.white.opacity(0.09)).frame(width: 1).padding(.vertical, 4)
             AgendaView(agenda: model.agenda, full: false).frame(width: model.isIsland ? 160 : NotchGeometry.detailSidebarWidth)
         }
@@ -328,7 +305,9 @@ struct Artwork: View {
 
 struct MusicView: View {
     @ObservedObject var music: MusicViewModel
+    @ObservedObject var preferences: PreferencesViewModel
     @Environment(\.notchReduceMotion) private var reduceMotion
+    @State private var showError = false
     var body: some View {
         VStack(alignment: .leading, spacing: NotchGeometry.detailContentGap) {
             ZStack(alignment: .leading) {
@@ -338,76 +317,72 @@ struct MusicView: View {
                             .frame(width: NotchGeometry.detailIconSize, height: NotchGeometry.detailIconSize)
                             .clipped()
                     } else { Image(systemName: "music.note") }
-                } title: { Text(music.sourceTitle) } accessory: { EmptyView() }
+                } title: { Text(music.sourceTitle) } accessory: {
+                    if let error = music.lidAudioError {
+                        NotchIconButton(symbol: "exclamationmark.circle", label: "Audio details", hint: error) {
+                            showError.toggle()
+                        }
+                        .popover(isPresented: $showError) {
+                            Text(error).font(AppFont.body).padding(16).frame(width: 300).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
                 .id(music.sourceIdentity)
                 .transition(NotchMotion.replacement(reduceMotion: reduceMotion))
             }.frame(height: NotchGeometry.detailHeadingHeight)
                 .animation(NotchMotion.content(reduceMotion: reduceMotion), value: music.sourceIdentity)
-            HStack(spacing: 14) {
-                Artwork(image: music.artwork)
+            HStack(spacing: 12) {
+                Button { music.openSource() } label: {
+                    Artwork(image: music.artwork)
+                        .fixedSize()
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(NotchButtonStyle(.plain))
+                .disabled(!music.canOpenSource)
+                .notchHint("Open \(music.sourceTitle)")
+                .accessibilityLabel("Open \(music.sourceTitle)")
+                .pointingCursor(music.canOpenSource)
                 VStack(alignment: .leading, spacing: 4) {
                     ZStack(alignment: .leading) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(music.title).font(AppFont.title).lineLimit(1)
-                            Text(music.artist).font(AppFont.subtitle).foregroundStyle(music.accentColor.opacity(0.8)).lineLimit(1)
+                            Text(music.hasTrack ? music.artist : music.idlePlaybackDetail)
+                                .font(AppFont.subtitle).foregroundStyle(music.accentColor.opacity(0.8)).lineLimit(music.hasTrack ? 1 : 2)
                         }
                         .id(music.contentIdentity)
                         .transition(NotchMotion.replacement(reduceMotion: reduceMotion))
                     }
                     .animation(NotchMotion.content(reduceMotion: reduceMotion), value: music.contentIdentity)
                     if music.hasTrack {
-                        AccentProgress(value: music.position / max(1, music.duration), color: music.accentColor)
+                        MediaSeekBar(music: music).notchHint("Click or drag to change playback position")
                         HStack {
-                            Text(ClockFormat.format(music.position.rounded(.down))); Spacer(); Text(ClockFormat.format(music.duration.rounded(.down)))
+                            Text(ClockFormat.format(music.displayedPosition.rounded(.down))); Spacer(); Text(music.canSeek ? ClockFormat.format(music.duration.rounded(.down)) : "--:--")
                         }.font(AppFont.label).foregroundStyle(music.accentColor.opacity(0.75))
-                        HStack(spacing: 8) {
-                            HStack(spacing: 14) {
-                                transport("backward.end.fill", "Previous track", "previous track")
-                                transport(music.isPlaying ? "pause.fill" : "play.fill", "Play or pause", "playpause", large: true)
-                                transport("forward.end.fill", "Next track", "next track")
-                            }.fixedSize()
-                            Spacer(minLength: 8)
-                            Button { music.lyrics.toggle() } label: {
-                                Image(systemName: music.lyrics.enabled ? "mic.fill" : "mic")
-                                    .font(AppFont.symbol).frame(width: 24, height: 24)
-                                    .foregroundStyle(music.lyrics.enabled ? music.accentColor : .white.opacity(0.65))
-                                    .background(music.lyrics.enabled ? Color.white.opacity(0.14) : .clear, in: Circle())
-                            }
-                            .buttonStyle(NotchHoverButtonStyle())
-                            .help(music.lyrics.enabled ? "Hide lyrics" : "Show synced lyrics")
-                            .accessibilityLabel("Synced lyrics")
-                            .accessibilityValue(music.lyrics.enabled ? "On" : "Off")
-                            HStack(spacing: 5) {
-                                Image(systemName: "airplayaudio").fixedSize()
-                                MarqueeText(text: music.outputName, color: music.accent.withAlphaComponent(0.75))
-                                    .frame(height: 14)
-                            }
-                                .font(AppFont.label)
-                                .foregroundStyle(music.accentColor.opacity(0.75))
-                                .lineLimit(1)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(.white.opacity(0.09), in: Capsule())
-                                .overlay(Capsule().strokeBorder(.white.opacity(0.08), lineWidth: 0.5))
-                                .help("System audio output: \(music.outputName)")
-                                .accessibilityElement(children: .ignore)
-                                .accessibilityLabel("System audio output: \(music.outputName)")
+                    }
+                    HStack(spacing: 6) {
+                        HStack(spacing: 10) {
+                            transport("backward.end.fill", "Previous track", "previous track")
+                            transport(music.isStartingDefaultPlayer ? "hourglass" : (music.isPlaying ? "pause.fill" : "play.fill"), music.playHint, "playpause", large: true)
+                            transport("forward.end.fill", "Next track", "next track")
+                        }.fixedSize()
+                        Spacer(minLength: 4)
+                        LyricsMicButton(enabled: music.lyrics.enabled, tint: music.accent,
+                                        presentation: $preferences.values.lyricsPresentation) { music.lyrics.toggle() }
+                            .disabled(!music.hasTrack)
+                        if music.outputName != nil {
+                            NotchAudioOutputButton(music: music)
+                        }
 
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    if music.error != nil {
-                        Text("Playback unavailable").font(AppFont.label).foregroundStyle(.orange).help(music.error ?? "")
-                    }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     func transport(_ symbol: String, _ label: String, _ command: String, large: Bool = false) -> some View {
-        Button { music.command(command) } label: {
-            Image(systemName: symbol).font(large ? AppFont.largeSymbol : AppFont.symbol).frame(width: large ? 30 : 24, height: 24)
-                .contentShape(Rectangle())
-        }.buttonStyle(NotchHoverButtonStyle()).foregroundStyle(music.accentColor).help(label).accessibilityLabel(label)
+        NotchIconButton(symbol: symbol, label: label, width: large ? 30 : 28, tint: music.accentColor,
+            symbolFont: large ? AppFont.largeSymbol : AppFont.symbol) { music.command(command) }
+            .disabled(command == "playpause" ? !music.canPlay : !music.hasTrack || music.isStartingDefaultPlayer)
     }
 }
 
@@ -430,31 +405,15 @@ struct AccentProgress: View {
             .accessibilityValue("\(Int(fraction * 100)) percent")
     }
 }
-struct NotchButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-    var prominent = false
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(AppFont.button)
-            .foregroundStyle(prominent ? Color.black : .white)
-            .padding(.horizontal, 10)
-            .frame(minHeight: 26)
-            .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(prominent ? clockOrange : .white.opacity(0.10))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(.white.opacity(prominent ? 0 : 0.08), lineWidth: 0.5)
-                    }
-            }
-            .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
-            .modifier(NotchHoverEffect(pressed: configuration.isPressed))
-    }
-}
+
 
 
 struct FocusView: View {
-    @ObservedObject var model: NotchViewModel
+    @ObservedObject var clock: ClockViewModel
+    @ObservedObject var preferences: PreferencesViewModel
+    let now: Date
+    var visible: Bool
+    private var hasStopwatch: Bool { clock.stopwatch.isRunning || clock.stopwatch.elapsed > 0 }
     @State private var showError = false
     @Environment(\.notchReduceMotion) private var reduceMotion
     var body: some View {
@@ -463,84 +422,86 @@ struct FocusView: View {
                 DetailHeading {
                     Image(systemName: "timer")
                 } title: { Text("Timer") } accessory: {
-                    if model.clock.timers.count > 1 {
-                        Button("\(model.clock.timers.count) timers") { model.clock.openClock() }
-                            .font(AppFont.label).buttonStyle(NotchHoverButtonStyle()).foregroundStyle(muted)
-                            .help("Open Clock to choose a timer")
+                    if clock.timers.count > 1 {
+                        Button("\(clock.timers.count) timers") { clock.openClock() }
+                            .font(AppFont.label).buttonStyle(NotchButtonStyle(.plain)).foregroundStyle(muted)
+                            .notchHint("Open Clock to choose a timer")
                     }
-                    if model.clock.isControlling { ProgressView().controlSize(.mini) }
-                    if let error = model.clock.commandError {
+                    if clock.isControlling { ProgressView().controlSize(.mini) }
+                    if let error = clock.commandError {
                         Button { showError.toggle() } label: { Image(systemName: "exclamationmark.circle").foregroundStyle(clockOrange) }
-                            .buttonStyle(NotchHoverButtonStyle()).accessibilityLabel("Clock access details")
-                            .help(error)
+                            .buttonStyle(NotchButtonStyle(.plain)).accessibilityLabel("Clock access details")
+                            .notchHint(error)
                             .popover(isPresented: $showError) {
                                 Text(error).font(AppFont.body).padding(16).frame(width: 300).fixedSize(horizontal: false, vertical: true)
                             }
                     }
                 }
                 ZStack(alignment: .top) {
-                    if let timer = model.clock.primaryTimer {
+                    if let timer = clock.primaryTimer {
                         VStack(spacing: NotchGeometry.detailContentGap) {
                             Spacer(minLength: 0)
-                            counter(ClockFormat.format(timer.value(at: model.now)), detail: timer.isPaused ? "Paused · \(timer.title)" : timer.title)
+                            counter(ClockFormat.format(timer.value(at: now)), detail: timer.isPaused ? "Paused · \(timer.title)" : timer.title)
                             Spacer(minLength: 0)
                             HStack(spacing: 8) {
-                                Button("Stop") { model.clock.control(.stopTimer) }
-                                    .buttonStyle(NotchButtonStyle()).accessibilityLabel("Stop timer")
+                                Button("Stop") { clock.control(.stopTimer) }
+                                    .buttonStyle(NotchButtonStyle()).accessibilityLabel("Stop timer").notchHint("Stop this timer")
                                 Button {
-                                    model.clock.control(timer.isPaused ? .resumeTimer : .pauseTimer)
+                                    clock.control(timer.isPaused ? .resumeTimer : .pauseTimer)
                                 } label: {
                                     Label(timer.isPaused ? "Resume" : "Pause", systemImage: timer.isPaused ? "play.fill" : "pause.fill")
                                         .frame(minWidth: 64)
                                 }.buttonStyle(NotchButtonStyle(prominent: true))
                                     .disabled(timer.state == 4).accessibilityLabel(timer.isPaused ? "Resume timer" : "Pause timer")
+                                    .notchHint(timer.isPaused ? "Resume this timer" : "Pause this timer")
                             }.frame(height: 28)
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .id(timer.id)
                         .transition(NotchMotion.replacement(reduceMotion: reduceMotion))
                     } else {
-                        TimerPresetGrid(presets: model.preferences.values.timerPresets,
-                                        visible: model.expanded && model.detailTab == .focus) {
-                            model.clock.control(.startTimer($0))
+                        TimerPresetGrid(presets: preferences.values.timerPresets,
+                                        visible: visible) {
+                            clock.control(.startTimer($0))
                         }
                         .transition(NotchMotion.replacement(reduceMotion: reduceMotion))
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .animation(NotchMotion.content(reduceMotion: reduceMotion), value: model.clock.primaryTimer?.id)
+                .animation(NotchMotion.content(reduceMotion: reduceMotion), value: clock.primaryTimer?.id)
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             Rectangle().fill(.white.opacity(0.09)).frame(width: 1).padding(.vertical, 4)
             VStack(spacing: NotchGeometry.detailContentGap) {
                 DetailHeading("Stopwatch", systemImage: "stopwatch")
                 Spacer(minLength: 0)
-                if model.hasStopwatch {
-                    counter(ClockFormat.format(model.clock.stopwatch.value(at: model.now).rounded(.down)),
-                            detail: model.clock.stopwatch.isRunning ? "Running" : "Paused")
+                if hasStopwatch {
+                    counter(ClockFormat.format(clock.stopwatch.value(at: now).rounded(.down)),
+                            detail: clock.stopwatch.isRunning ? "Running" : "Paused")
                     Spacer(minLength: 0)
                     HStack(spacing: 8) {
-                        Button(model.clock.stopwatch.isRunning ? "Stop" : "Reset") { model.clock.control(.stopStopwatch) }
+                        Button(clock.stopwatch.isRunning ? "Stop" : "Reset") { clock.control(.stopStopwatch) }
                             .buttonStyle(NotchButtonStyle())
-                            .accessibilityLabel("Stop and reset stopwatch").help("Stop and reset the stopwatch")
+                            .accessibilityLabel("Stop and reset stopwatch").notchHint("Stop and reset the stopwatch")
                         Button {
-                            model.clock.control(model.clock.stopwatch.isRunning ? .pauseStopwatch : .startStopwatch)
+                            clock.control(clock.stopwatch.isRunning ? .pauseStopwatch : .startStopwatch)
                         } label: {
-                            Label(model.clock.stopwatch.isRunning ? "Pause" : "Resume", systemImage: model.clock.stopwatch.isRunning ? "pause.fill" : "play.fill")
+                            Label(clock.stopwatch.isRunning ? "Pause" : "Resume", systemImage: clock.stopwatch.isRunning ? "pause.fill" : "play.fill")
                                 .frame(minWidth: 64)
                         }.buttonStyle(NotchButtonStyle(prominent: true))
-                            .accessibilityLabel(model.clock.stopwatch.isRunning ? "Pause stopwatch" : "Resume stopwatch")
+                            .accessibilityLabel(clock.stopwatch.isRunning ? "Pause stopwatch" : "Resume stopwatch")
+                            .notchHint(clock.stopwatch.isRunning ? "Pause the stopwatch" : "Resume the stopwatch")
                     }.frame(height: 28)
                 } else {
-                    Button { model.clock.control(.startStopwatch) } label: {
+                    Button { clock.control(.startStopwatch) } label: {
                         Label("Start", systemImage: "play.fill").frame(minWidth: 84)
                     }.buttonStyle(NotchButtonStyle(prominent: true))
-                        .accessibilityLabel("Start stopwatch").help("Start stopwatch")
+                        .accessibilityLabel("Start stopwatch").notchHint("Start stopwatch")
                         .frame(maxWidth: .infinity).frame(height: 30)
                     Spacer(minLength: 0)
                 }
             }.frame(width: NotchGeometry.detailSidebarWidth).frame(maxHeight: .infinity, alignment: .topLeading)
-        }.disabled(model.clock.isControlling)
-        .onChange(of: model.clock.commandError) { _, value in showError = value != nil }
+        }.disabled(clock.isControlling)
+        .onChange(of: clock.commandError) { _, value in showError = value != nil }
     }
     private func counter(_ value: String, detail: String) -> some View {
         VStack(spacing: 2) {
@@ -597,9 +558,12 @@ struct AgendaView: View {
 
 struct MirrorView: View {
     @ObservedObject var camera: CameraViewModel
+    var openPhotoBooth: () -> Void = {}
     var body: some View {
         VStack(alignment: .leading, spacing: NotchGeometry.detailContentGap) {
-            DetailHeading("Camera", systemImage: "web.camera")
+            DetailHeading(icon: { Image(systemName: "web.camera") }, title: { Text("Camera") }) {
+                NotchIconButton(symbol: "arrow.up.forward.app", label: "Open Photo Booth", action: openPhotoBooth)
+            }
             preview
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -615,5 +579,28 @@ struct MirrorView: View {
                     .multilineTextAlignment(.center).padding(20)
             }
         }.clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(alignment: .bottomTrailing) {
+            if camera.running {
+                Button(action: camera.capture) {
+                    ZStack {
+                        Circle().strokeBorder(.white, lineWidth: 2)
+                        Circle().fill(.white).padding(5)
+                        if camera.isCapturing { ProgressView().controlSize(.small).tint(.black) }
+                    }.frame(width: 44, height: 44)
+                        .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
+                        .opacity(camera.isCapturing ? 0.55 : 1)
+                }.buttonStyle(NotchButtonStyle(.plain)).disabled(camera.isCapturing)
+                    .notchHint("Take Photo").accessibilityLabel("Take Photo")
+                    .pointingCursor().padding(12)
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if let message = camera.captureMessage {
+                Label(message, systemImage: camera.captureFailed ? "exclamationmark.circle" : "checkmark.circle")
+                    .font(AppFont.subtitle).foregroundStyle(.white)
+                    .lineLimit(2).padding(8).background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 6))
+                    .padding(.trailing, 70).padding(12).allowsHitTesting(false)
+            }
+        }
     }
 }

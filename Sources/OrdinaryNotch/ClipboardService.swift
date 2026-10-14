@@ -18,6 +18,7 @@ final class ClipboardService: ClipboardServing {
         "Pasteboard generator type", "net.antelle.keeweb", "dev.ordinary.notch.clipboard"
     ]
     private let pasteboard: NSPasteboard
+    private let secureInputEnabled: () -> Bool
     private let queue = DispatchQueue(label: "ordinary.clipboard", qos: .utility)
     private var timer: Timer?
     private var lastChange = 0
@@ -25,7 +26,9 @@ final class ClipboardService: ClipboardServing {
     private var reading = false
     private var receive: (@MainActor (ClipboardEntry) -> Void)?
     var isMonitoring: Bool { timer != nil }
-    init(pasteboard: NSPasteboard = .general) { self.pasteboard = pasteboard }
+    init(pasteboard: NSPasteboard = .general, secureInputEnabled: @escaping () -> Bool = { IsSecureEventInputEnabled() }) {
+        self.pasteboard = pasteboard; self.secureInputEnabled = secureInputEnabled
+    }
 
     func start(receive: @escaping @MainActor (ClipboardEntry) -> Void) {
         guard timer == nil else { return }
@@ -47,7 +50,7 @@ final class ClipboardService: ClipboardServing {
         let change = pasteboard.changeCount
         guard change != lastChange else { return }
         lastChange = change
-        guard !IsSecureEventInputEnabled() else { return }
+        guard !secureInputEnabled() else { return }
         let types = Set((pasteboard.types ?? []).map(\.rawValue))
         guard types.isDisjoint(with: Self.ignoredTypes) else { return }
         reading = true
@@ -60,7 +63,7 @@ final class ClipboardService: ClipboardServing {
                 guard let self else { return }
                 self.reading = false
                 guard self.generation == generation, self.pasteboard.changeCount == change,
-                      !IsSecureEventInputEnabled() else { return }
+                      !self.secureInputEnabled() else { return }
                 if let entry { self.receive?(entry) }
             }
         }

@@ -10,20 +10,20 @@ struct TimerPresetGrid: View {
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 5) {
-            ForEach(Array(presets.enumerated()), id: \.offset) { index, seconds in
+            ForEach(Array(presets.enumerated()), id: \.offset) { _, seconds in
                 Button { start(seconds) } label: {
-                    Text(durationLabel(seconds))
-                        .font(AppFont.button).foregroundStyle(.white)
-                        .frame(maxWidth: .infinity).frame(height: 20)
+                    Text(DurationText.format(seconds))
+                        .font(AppFont.button).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity).frame(height: 26)
                 }
-                .buttonStyle(NotchButtonStyle()).frame(height: 26)
-                .accessibilityLabel("Start \(durationLabel(seconds)) timer")
-                .opacity(appeared ? 1 : 0)
-                .offset(y: reduceMotion || appeared ? 0 : 6)
-                .animation(reduceMotion ? .easeOut(duration: 0.1) :
-                    .easeOut(duration: appeared ? 0.22 : 0.12).delay(appeared ? Double(index) * 0.02 : 0), value: appeared)
+                .buttonStyle(NotchButtonStyle(.standard, padded: false))
+                .accessibilityLabel("Start \(DurationText.format(seconds)) timer")
+                .notchHint("Start a \(DurationText.format(seconds)) timer")
             }
         }
+        .opacity(appeared ? 1 : 0)
+        .offset(y: reduceMotion || appeared ? 0 : 6)
+        .animation(NotchMotion.details(expanded: appeared, reduceMotion: reduceMotion), value: appeared)
         .task(id: visible) {
             guard visible else { appeared = false; return }
             // Establish the hidden first frame before animating a newly inserted grid.
@@ -32,12 +32,5 @@ struct TimerPresetGrid: View {
             appeared = true
         }
         .onDisappear { appeared = false }
-    }
-
-    private func durationLabel(_ seconds: Int) -> String {
-        if seconds < 60 { return "\(seconds) sec" }
-        if seconds == 3600 { return "1 hr" }
-        if seconds % 60 == 0 { return "\(seconds / 60) min" }
-        return "\(seconds / 60)m \(seconds % 60)s"
     }
 }

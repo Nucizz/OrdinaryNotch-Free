@@ -39,10 +39,30 @@ struct CompactActivityLayout {
     let mainWidth: CGFloat
     let detachedWidth: CGFloat
     var detachedSpan: CGFloat { detachedWidth > 0 ? detachedWidth + NotchGeometry.islandSeparation : 0 }
+    var detachedCenter: CGFloat { mainWidth / 2 + NotchGeometry.islandSeparation + detachedWidth / 2 }
+
+    /// Include wing padding, but leave the physical cutout and island gap untargeted.
+    func activity(atX x: CGFloat, centerWidth: CGFloat) -> CompactActivity? {
+        let region: Region
+        if x >= -mainWidth / 2 && x <= mainWidth / 2 {
+            if placements.first?.primary.region == .mainIsland {
+                region = .mainIsland
+            } else if x < -centerWidth / 2 {
+                region = .leftWing
+            } else if x > centerWidth / 2 {
+                region = .rightWing
+            } else { return nil }
+        } else if detachedWidth > 0 && x >= mainWidth / 2 + NotchGeometry.islandSeparation &&
+                    x <= mainWidth / 2 + detachedSpan {
+            region = .offIsland
+        } else { return nil }
+        return placements.first { $0.primary.region == region || $0.secondary?.region == region }?.activity
+    }
 
     /// Physical notch: one activity spans both wings, or two activities each occupy a wing.
-    /// Dynamic Island: the main activity spans the cutout; only the second activity's primary
-    /// content appears in a detached capsule. Coordinates keep the main cutout centered.
+    /// Dynamic Island: the main activity spans the cutout; the second occupies a capsule,
+    /// with both parts in detailed mode. Coordinates are local to the main island;
+    /// the view offsets both islands to center the complete group.
     init(contents: [Content], centerWidth: CGFloat, minimumWidth: CGFloat = 0, style: NotchStyle = .notch,
          presentation: NotchActivityPresentation = .detailed,
          outerPadding: CGFloat = NotchGeometry.compactOuterPadding) {
@@ -50,10 +70,11 @@ struct CompactActivityLayout {
         if style == .island {
             leftWidth = visible.first?.leftWidth ?? 0
             rightWidth = visible.first?.rightWidth ?? 0
-            let contentWidth = max(leftWidth, rightWidth)
+            let contentWidth = visible.isEmpty ? 0 : max(NotchGeometry.islandMinimumWingWidth, leftWidth, rightWidth)
             mainWidth = max(minimumWidth, centerWidth + 2 * (contentWidth > 0 ? contentWidth + outerPadding : 0))
             let second = visible.dropFirst().first
-            detachedWidth = second.map { max(NotchGeometry.islandCompactHeight, $0.primaryWidth + 16) } ?? 0
+            detachedWidth = second.map { max(NotchGeometry.islandCompactHeight,
+                (presentation == .detailed ? $0.combinedWidth : $0.primaryWidth) + 16) } ?? 0
             let span = detachedWidth > 0 ? detachedWidth + NotchGeometry.islandSeparation : 0
             width = mainWidth + span
             wingExtent = (mainWidth - centerWidth) / 2
@@ -68,10 +89,20 @@ struct CompactActivityLayout {
                                         secondary: first.activity.primarySide == .left ? right : left))
             }
             if let second {
-                result.append(Placement(activity: second.activity, priority: 1,
-                                        primary: Position(side: .right, region: .offIsland, width: second.primaryWidth,
-                                                          offset: mainWidth / 2 + NotchGeometry.islandSeparation + detachedWidth / 2),
-                                        secondary: nil))
+                let center = mainWidth / 2 + NotchGeometry.islandSeparation + detachedWidth / 2
+                if presentation == .detailed {
+                    let start = center - second.combinedWidth / 2
+                    let left = Position(side: .left, region: .offIsland, width: second.leftWidth,
+                                        offset: start + second.leftWidth / 2)
+                    let right = Position(side: .right, region: .offIsland, width: second.rightWidth,
+                                         offset: start + second.leftWidth + Self.partSpacing + second.rightWidth / 2)
+                    result.append(Placement(activity: second.activity, priority: 1,
+                        primary: second.activity.primarySide == .left ? left : right,
+                        secondary: second.activity.primarySide == .left ? right : left))
+                } else {
+                    result.append(Placement(activity: second.activity, priority: 1,
+                        primary: Position(side: .right, region: .offIsland, width: second.primaryWidth, offset: center), secondary: nil))
+                }
             }
             placements = result
             return

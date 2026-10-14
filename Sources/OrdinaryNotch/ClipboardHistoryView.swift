@@ -9,4 +9,3 @@ struct ClipboardHistoryCommand: View {
             .disabled(!model.enabled)
     }
 }
-

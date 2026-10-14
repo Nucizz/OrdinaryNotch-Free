@@ -93,11 +93,25 @@ struct ClockSnapshot {
 protocol ClockReading {
     func read() async -> ClockSnapshot
     func open(stopwatch: Bool)
+    func monitorChanges(_ changed: @escaping @MainActor () -> Void)
+    func stopMonitoring()
+}
+extension ClockReading {
+    func monitorChanges(_ changed: @escaping @MainActor () -> Void) {}
+    func stopMonitoring() {}
 }
 @MainActor
 final class AppleClockService: ClockReading {
     private let queue = DispatchQueue(label: "ordinary.apple-clock", qos: .utility)
+    private let changes = FileChangeMonitor()
     private let databasePath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Group Containers/group.com.apple.mobiletimerd/local.sqlite").path
+    func monitorChanges(_ changed: @escaping @MainActor () -> Void) {
+        changes.watch([URL(fileURLWithPath: databasePath).deletingLastPathComponent(),
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Preferences/com.apple.mobiletimerd.plist")]) {
+                Task { @MainActor in changed() }
+            }
+    }
+    func stopMonitoring() { changes.stop() }
     func read() async -> ClockSnapshot {
         let path = databasePath
         return await withCheckedContinuation { continuation in

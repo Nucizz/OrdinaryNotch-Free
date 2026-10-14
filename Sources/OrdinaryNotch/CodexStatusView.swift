@@ -84,6 +84,7 @@ struct CodexStatusValue: View {
             switch activity.presentation(at: now) {
             case .working:
                 Text(activity.elapsed(at: now).map(CodexDuration.format) ?? "—").foregroundStyle(.white)
+                    .modifier(ComputerControlGlow(active: activity.isControllingComputer(at: now)))
             case .complete: statusSymbol("checkmark.circle.fill", color: Color(nsColor: .systemGreen))
             case .input:
                 statusSymbol(activity.statusSymbolName ?? "questionmark.bubble.fill",

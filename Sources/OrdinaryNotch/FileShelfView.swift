@@ -2,59 +2,34 @@ import SwiftUI
 
 struct FileShelfView: View {
     @ObservedObject var model: FileShelfViewModel
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Label("File Shelf", systemImage: "tray").font(AppFont.label)
-                Spacer()
-                if !model.items.isEmpty { Button("Clear") { model.clear() }.help("Remove all files from the shelf") }
+        VStack(alignment: .leading, spacing: NotchGeometry.detailContentGap) {
+            DetailHeading {
+                Image(systemName: "tray")
+            } title: { Text("File Shelf") } accessory: {
+                if !model.selectedIDs.isEmpty {
+                    Text("\(model.selectedIDs.count) selected").font(AppFont.subtitle).foregroundStyle(.secondary)
+                }
+                NotchIconButton(symbol: "doc.on.doc", label: "Copy selected files") { model.copySelection() }
+                    .disabled(model.selectedIDs.isEmpty)
+                NotchIconButton(symbol: "doc.on.clipboard", label: "Paste files into shelf") { model.paste() }
+                NotchIconButton(symbol: "trash", label: "Clear File Shelf", hint: "Clear the shelf without deleting the original files") { model.clear() }
+                    .disabled(model.items.isEmpty)
             }
-            .buttonStyle(.borderless).font(AppFont.subtitle)
-            if model.items.isEmpty {
-                VStack(spacing: 5) {
-                    Text("Drop files here").font(AppFont.title)
-                    Text("Keep them handy, then drag them into another app.")
-                        .font(AppFont.subtitle).foregroundStyle(.white.opacity(0.65))
-                    Text("The shelf clears when you quit.")
-                        .font(AppFont.subtitle).foregroundStyle(.white.opacity(0.65))
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView(.horizontal) {
-                    HStack(alignment: .top, spacing: 12) {
-                        ForEach(model.items) { item in
-                            Button { model.open(item) } label: {
-                                VStack(spacing: 5) {
-                                    Group {
-                                        if let thumbnail = item.thumbnail {
-                                            Image(nsImage: thumbnail).resizable().scaledToFit()
-                                                .frame(width: 64, height: 44)
-                                                .clipShape(RoundedRectangle(cornerRadius: 5))
-                                        } else {
-                                            Image(nsImage: item.icon).resizable().scaledToFit().frame(width: 34, height: 34)
-                                        }
-                                    }.frame(width: 64, height: 44).accessibilityHidden(true)
-                                    Text(item.url.lastPathComponent).font(AppFont.subtitle)
-                                        .lineLimit(2).truncationMode(.middle).multilineTextAlignment(.center)
-                                }.frame(width: 88, height: 76)
-                            }
-                            .buttonStyle(NotchHoverButtonStyle())
-                            .help(item.url.path)
-                            .accessibilityLabel(item.url.lastPathComponent)
-                            .onDrag { NSItemProvider(object: item.url as NSURL) }
-                            .contextMenu {
-                                Button("Open") { model.open(item) }
-                                Button("Show in Finder") { model.reveal(item) }
-                                Button("Remove from Shelf") { model.remove(item) }
-                            }
-                            .accessibilityAction(named: "Remove from Shelf") { model.remove(item) }
-                        }
+            .buttonStyle(NotchButtonStyle(.plain))
+            FileShelfCollection(model: model)
+                .frame(minHeight: 84, maxHeight: .infinity)
+                .overlay {
+                    if model.items.isEmpty {
+                        Text("No files").font(AppFont.title).foregroundStyle(.secondary).allowsHitTesting(false)
                     }
                 }
-            }
-            if let error = model.error {
-                Text(error).font(AppFont.subtitle).foregroundStyle(.orange).lineLimit(2)
-            }
         }
     }
+}
+
+private struct FileShelfCollection: NSViewControllerRepresentable {
+    let model: FileShelfViewModel
+    func makeNSViewController(context: Context) -> FileShelfContentController { FileShelfContentController(model: model) }
+    func updateNSViewController(_ controller: FileShelfContentController, context: Context) {}
 }
