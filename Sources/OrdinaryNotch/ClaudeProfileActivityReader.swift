@@ -4,9 +4,11 @@ import ActivityCore
 /// Readers and hook directories are separated by the canonical configuration root.
 final class ClaudeProfileActivityReader: @unchecked Sendable {
     private let lock = NSLock()
+    private(set) var monitoringAvailable = false
     private var readers: [String: ClaudeActivityReader] = [:]
     func read(profiles: [CodeProfile], now: Date = Date()) -> [CodeTask] {
         lock.lock(); defer { lock.unlock() }
+        monitoringAvailable = true
         return profiles.flatMap { profile in
             let reader: ClaudeActivityReader
             if let cached = readers[profile.id] { reader = cached }
@@ -25,6 +27,7 @@ final class ClaudeProfileActivityReader: @unchecked Sendable {
                 task.activity.usage = usage
                 return task
             }
+            monitoringAvailable = monitoringAvailable && reader.monitoringAvailable
             if tasks.isEmpty, let usage {
                 var task = CodeTask(id: profile.id + ":usage", provider: .claude, activity: .idle, profileID: profile.id,
                                     account: profile.account, sourceApplication: profile.runtime, isUsageOnly: true)

@@ -12,7 +12,6 @@ final class ClaudeMonitoringViewModel: ObservableObject {
     }
     func enable(_ account: CodeAccount) {
         let profiles = ClaudeProfiles()
-
         do {
             try ClaudeMonitoringSetup.install(root: profiles.profile(account).root,
                 executable: Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/OrdinaryActivityBridge"))

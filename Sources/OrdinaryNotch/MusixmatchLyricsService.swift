@@ -1,42 +1,37 @@
 import Foundation
 
-/// Uses the desktop API documented by Paxsenix0/MusixMatch-Lyrics.
-/// Independent native client: verified HTTPS, memory-only tokens and strict recording matching.
+/// Official API client. Each instance owns one key and its in-memory cache.
 actor MusixmatchLyricsService: LyricsServing {
+    private let apiKey: String
     private let session: URLSession
     private let fallback: (any LyricsServing)?
-    private var token: (value: String, expires: Date)?
     private var nextRequestAt = Date.distantPast
     private var cache: [LyricsTrack: LyricsResult] = [:]
     private var cacheOrder: [LyricsTrack] = []
-    private enum Failure: Error { case unauthorized, unavailable }
 
-    init(session: URLSession = URLSession(configuration: .ephemeral), fallback: (any LyricsServing)? = LyricsService()) {
-        self.session = session; self.fallback = fallback
+    init(apiKey: String, session: URLSession? = nil, fallback: (any LyricsServing)? = LyricsService()) {
+        self.apiKey = apiKey
+        self.session = session ?? URLSession(configuration: .ephemeral, delegate: LyricsRedirectPolicy(), delegateQueue: nil)
+        self.fallback = fallback
     }
 
-    static func request(track: LyricsTrack? = nil, token: String? = nil) -> URLRequest {
-        let method = track == nil ? "token.get" : "macro.subtitles.get"
-        var url = URLComponents(string: "https://apic-desktop.musixmatch.com/ws/1.1/" + method)!
-        var items = [URLQueryItem(name: "app_id", value: "web-desktop-app-v1.0")]
-        if let track {
-            items += [URLQueryItem(name: "format", value: "json"),
-                      URLQueryItem(name: "namespace", value: "lyrics_richsynched"),
+    static func request(track: LyricsTrack, apiKey: String, trackID: Int? = nil) -> URLRequest {
+        let method = trackID == nil ? "matcher.track.get" : "track.subtitle.get"
+        var url = URLComponents(string: "https://api.musixmatch.com/ws/1.1/" + method)!
+        var items = [URLQueryItem(name: "apikey", value: apiKey), URLQueryItem(name: "format", value: "json")]
+        if let trackID {
+            items += [URLQueryItem(name: "track_id", value: String(trackID)),
                       URLQueryItem(name: "subtitle_format", value: "lrc"),
-                      URLQueryItem(name: "q_track", value: track.title),
-                      URLQueryItem(name: "q_artist", value: track.artist),
-                      URLQueryItem(name: "q_artists", value: track.artist),
-                      URLQueryItem(name: "q_album", value: track.album ?? ""),
-                      URLQueryItem(name: "q_duration", value: String(track.duration)),
                       URLQueryItem(name: "f_subtitle_length", value: String(track.duration)),
-                      URLQueryItem(name: "f_subtitle_length_max_deviation", value: "2"),
-                      URLQueryItem(name: "usertoken", value: token)]
+                      URLQueryItem(name: "f_subtitle_length_max_deviation", value: "2")]
+        } else {
+            items += [URLQueryItem(name: "q_track", value: track.title),
+                      URLQueryItem(name: "q_artist", value: track.artist)]
         }
         url.queryItems = items
         var request = URLRequest(url: url.url!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 8)
         request.setValue("OrdinaryNotch/1.0", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("AWSELBCORS=0; AWSELB=0;", forHTTPHeaderField: "Cookie")
         return request
     }
 
@@ -44,8 +39,15 @@ actor MusixmatchLyricsService: LyricsServing {
         try Task.checkCancellation()
         if let value = cache[track] { return value }
         let primaryResult: LyricsResult
-        do { primaryResult = try await primary(track) }
-        catch {
+        do {
+            let metadata = try await load(Self.request(track: track, apiKey: apiKey))
+            if let match = try Self.match(metadata, for: track) {
+                if match.instrumental { primaryResult = .instrumental }
+                else {
+                    primaryResult = try Self.decode(await load(Self.request(track: track, apiKey: apiKey, trackID: match.id)), for: track)
+                }
+            } else { primaryResult = .unavailable }
+        } catch {
             try Task.checkCancellation()
             guard fallback != nil else { throw error }
             primaryResult = .unavailable
@@ -60,29 +62,6 @@ actor MusixmatchLyricsService: LyricsServing {
         return result
     }
 
-    private func primary(_ track: LyricsTrack) async throws -> LyricsResult {
-        for attempt in 0..<2 {
-            do {
-                let value = try await accessToken()
-                return try Self.decode(await load(Self.request(track: track, token: value)), for: track)
-            } catch Failure.unauthorized {
-                token = nil
-                if attempt == 1 { throw Failure.unauthorized }
-            } catch Failure.unavailable { return .unavailable }
-        }
-        return .unavailable
-    }
-
-    private func accessToken() async throws -> String {
-        if let token, token.expires > Date() { return token.value }
-        let message = try Self.message(await load(Self.request()))
-        guard let value = (message["body"] as? [String: Any])?["user_token"] as? String, !value.isEmpty else {
-            throw URLError(.badServerResponse)
-        }
-        token = (value, Date().addingTimeInterval(600))
-        return value
-    }
-
     private func load(_ request: URLRequest) async throws -> Data {
         let delay = nextRequestAt.timeIntervalSinceNow
         guard delay < 2 else { throw URLError(.resourceUnavailable) }
@@ -91,20 +70,12 @@ actor MusixmatchLyricsService: LyricsServing {
         nextRequestAt = Date().addingTimeInterval(0.5)
         let (data, response) = try await session.data(for: request)
         try Task.checkCancellation()
-        guard let response = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard let response = response as? HTTPURLResponse, data.count <= 1_048_576 else { throw URLError(.badServerResponse) }
         if response.statusCode == 429 {
-            let header = response.value(forHTTPHeaderField: "Retry-After") ?? ""
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone(secondsFromGMT: 0)
-            formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
-            let delay = Double(header) ?? formatter.date(from: header)?.timeIntervalSinceNow ?? 60
-            nextRequestAt = Date().addingTimeInterval(max(1, delay))
+            nextRequestAt = Date().addingTimeInterval(max(1, Double(response.value(forHTTPHeaderField: "Retry-After") ?? "") ?? 60))
             throw URLError(.resourceUnavailable)
         }
-        if [401, 403].contains(response.statusCode) { throw Failure.unauthorized }
-        if response.statusCode == 404 { throw Failure.unavailable }
-        guard response.statusCode == 200, data.count <= 1_048_576 else { throw URLError(.badServerResponse) }
+        guard response.statusCode == 200 else { throw URLError(.badServerResponse) }
         if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let message = object["message"] as? [String: Any],
            let header = message["header"] as? [String: Any], header["status_code"] as? Int == 429 {
@@ -114,47 +85,44 @@ actor MusixmatchLyricsService: LyricsServing {
         return data
     }
 
-    private static func message(_ data: Data) throws -> [String: Any] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw URLError(.badServerResponse) }
-        return try message(object)
-    }
-    private static func message(_ object: [String: Any]) throws -> [String: Any] {
-        guard let message = object["message"] as? [String: Any], let header = message["header"] as? [String: Any],
-              let status = header["status_code"] as? Int else { throw URLError(.badServerResponse) }
-        if [401, 403].contains(status) { throw Failure.unauthorized }
-        if status == 404 { throw Failure.unavailable }
-        guard status == 200 else { throw URLError(.badServerResponse) }
-        return message
+    private static func body(_ data: Data) throws -> [String: Any] {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let message = object["message"] as? [String: Any], let header = message["header"] as? [String: Any],
+              header["status_code"] as? Int == 200,
+              let body = message["body"] as? [String: Any] else { throw URLError(.badServerResponse) }
+        return body
     }
 
-    static func decode(_ data: Data, for track: LyricsTrack) throws -> LyricsResult {
-        let response = try message(data)
-        guard let body = response["body"] as? [String: Any], let calls = body["macro_calls"] as? [String: Any],
-              let matching = calls["matcher.track.get"] as? [String: Any] else { return .unavailable }
-        let matched = try message(matching)
-        guard let metadata = (matched["body"] as? [String: Any])?["track"] as? [String: Any],
-              let title = metadata["track_name"] as? String, let artist = metadata["artist_name"] as? String else { return .unavailable }
+    static func match(_ data: Data, for track: LyricsTrack) throws -> (id: Int, instrumental: Bool)? {
+        guard let metadata = try body(data)["track"] as? [String: Any],
+              let id = metadata["track_id"] as? Int, id > 0,
+              let title = metadata["track_name"] as? String, let artist = metadata["artist_name"] as? String else { return nil }
         func key(_ text: String) -> String {
             text.trimmingCharacters(in: .whitespacesAndNewlines).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
         }
-        guard key(title) == key(track.title), key(artist) == key(track.artist), (metadata["restricted"] as? Int ?? 0) == 0 else { return .unavailable }
+        guard key(title) == key(track.title), key(artist) == key(track.artist), (metadata["restricted"] as? Int ?? 0) == 0 else { return nil }
         if let album = track.album {
-            guard let value = metadata["album_name"] as? String, key(value) == key(album) else { return .unavailable }
+            guard let value = metadata["album_name"] as? String, key(value) == key(album) else { return nil }
         }
-        if let duration = metadata["track_length"] as? Double, duration > 0, abs(duration - Double(track.duration)) > 2 { return .unavailable }
-        if metadata["instrumental"] as? Int == 1 { return .instrumental }
-        guard let subtitles = calls["track.subtitles.get"] as? [String: Any] else { return .unavailable }
-        let lyrics = try message(subtitles)
-        guard let list = (lyrics["body"] as? [String: Any])?["subtitle_list"] as? [[String: Any]] else { return .unavailable }
-        for item in list {
-            guard let subtitle = item["subtitle"] as? [String: Any],
-                  (subtitle["restricted"] as? Int ?? 0) == 0,
-                  let duration = subtitle["subtitle_length"] as? Double, abs(duration - Double(track.duration)) <= 2,
-                  let lrc = subtitle["subtitle_body"] as? String else { continue }
-            let lines = TimedLyrics.parse(lrc)
-            guard lines.contains(where: { !$0.text.isEmpty }), lines.allSatisfy({ $0.time <= Double(track.duration) + 2 }) else { continue }
-            return .synced(lines, source: .musixmatch)
-        }
-        return .unavailable
+        if let duration = metadata["track_length"] as? Double, duration > 0, abs(duration - Double(track.duration)) > 2 { return nil }
+        return (id, metadata["instrumental"] as? Int == 1)
+    }
+
+    static func decode(_ data: Data, for track: LyricsTrack) throws -> LyricsResult {
+        guard let subtitle = try body(data)["subtitle"] as? [String: Any],
+              (subtitle["restricted"] as? Int ?? 0) == 0,
+              let duration = subtitle["subtitle_length"] as? Double, abs(duration - Double(track.duration)) <= 2,
+              let lrc = subtitle["subtitle_body"] as? String else { return .unavailable }
+        let lines = TimedLyrics.parse(lrc)
+        guard lines.contains(where: { !$0.text.isEmpty }), lines.allSatisfy({ $0.time <= Double(track.duration) + 2 }) else { return .unavailable }
+        return .synced(lines, source: .musixmatch)
+    }
+}
+
+/// Do not forward a user's key through redirects, including to another HTTPS host.
+private final class LyricsRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
     }
 }

@@ -9,7 +9,7 @@ final class LyricsViewModel: ObservableObject {
     @Published private(set) var currentLine: LyricLine?
     @Published private(set) var source: LyricsSource?
     @Published private(set) var hiddenForCurrentTrack = false
-    private let service: any LyricsServing
+    private var service: any LyricsServing
     private var track: LyricsTrack?
     private var position: Double = 0
     private var timingOffset: Double = 0
@@ -18,7 +18,14 @@ final class LyricsViewModel: ObservableObject {
     private var unavailableDismissal: Task<Void, Never>?
     private var generation = UUID()
 
-    init(service: any LyricsServing = MusixmatchLyricsService()) { self.service = service }
+    init(service: any LyricsServing = LyricsService()) { self.service = service }
+    func setService(_ service: any LyricsServing) {
+        cancel()
+        self.service = service
+        hiddenForCurrentTrack = false
+        lines = []; currentLine = nil; source = nil; status = .idle
+        if enabled { load() }
+    }
     var text: String {
         switch status {
         case .idle: return "Play a song to see lyrics"

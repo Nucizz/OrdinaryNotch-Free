@@ -11,7 +11,7 @@ final class NotchViewModel: ObservableObject {
     var canPresentNotices: () -> Bool = { true }
     let battery = BatteryViewModel()
     let thermal = ThermalAlertsViewModel()
-    var compactAlertActive: Bool { !welcomeVisible && (battery.active || thermal.active) }
+    var compactAlertActive: Bool { !welcomeVisible && (battery.active || thermal.active || toast.notice != nil) }
     var transientActive: Bool { welcomeVisible || compactAlertActive }
     var surfaceExpanded: Bool { expanded || welcomeVisible }
     @Published private(set) var welcomeVisible = false
@@ -179,15 +179,19 @@ final class NotchViewModel: ObservableObject {
     func openCodeProvider() { ApplicationNavigationService.openProvider(codeProvider) }
     func openCodeProvider(_ provider: CodeProvider) { ApplicationNavigationService.openProvider(provider) }
     var codeProvider: CodeProvider { codeDashboard.compactProvider ?? codeDashboard.provider }
+    lazy var lyricsProvider = LyricsProviderViewModel(lyrics: music.lyrics)
     let music: MusicViewModel
     let agenda: AgendaViewModel
     let permissions: PermissionsViewModel
+    let settingsCamera = CameraViewModel()
     let camera: CameraViewModel
     let fans = FanViewModel()
+    let toast = NotchToastViewModel()
+    let haptics = HapticFeedbackService()
     let bridgeFolder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OrdinaryNotch")
     var ticker: Timer?
     var ticks = 0
-    enum Tab: String, CaseIterable { case overview = "Overview", focus = "Clock", codex = "Codex", shelf = "File Shelf", fans = "Fans", mirror = "Mirror" }
+    typealias Tab = NotchTab
 
     private var subscriptions = Set<AnyCancellable>()
     init(preferences: PreferencesViewModel? = nil, isPreview: Bool = false, music: MusicViewModel? = nil) {
@@ -199,7 +203,7 @@ final class NotchViewModel: ObservableObject {
         self.permissions = PermissionsViewModel(agenda: agendaService)
         welcomeBuildID = WelcomeService.currentBuildID
         welcomePending = !self.preferences.hasShownWelcome(for: welcomeBuildID)
-        for publisher in [self.music.objectWillChange, camera.objectWillChange, agenda.objectWillChange, clock.objectWillChange, codexMonitor.objectWillChange, agentActions.objectWillChange, fans.objectWillChange, battery.objectWillChange, thermal.objectWillChange] {
+        for publisher in [self.music.objectWillChange, camera.objectWillChange, agenda.objectWillChange, clock.objectWillChange, codexMonitor.objectWillChange, agentActions.objectWillChange, fans.objectWillChange, battery.objectWillChange, thermal.objectWillChange, toast.objectWillChange] {
             publisher.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &subscriptions)
         }
         self.preferences.objectWillChange.receive(on: DispatchQueue.main).sink { [weak self] _ in
@@ -208,11 +212,38 @@ final class NotchViewModel: ObservableObject {
         self.preferences.$values.map(\.lyricsTimingOffset).removeDuplicates().sink { [weak self] offset in
             self?.music.lyrics.setTimingOffset(offset)
         }.store(in: &subscriptions)
+        self.preferences.$values.map(\.defaultMediaSelection).removeDuplicates().sink { [weak self] selection in
+            self?.music.defaultPlayer = selection
+        }.store(in: &subscriptions)
         self.preferences.$values.map(\.passAgentQuestions).removeDuplicates().sink { [weak self] enabled in
             self?.agentActions.setEnabled(enabled)
         }.store(in: &subscriptions)
     }
-    func isTabVisible(_ tab: Tab) -> Bool { true }
+    func isTabVisible(_ tab: Tab) -> Bool { !preferences.values.hiddenTabs.contains(tab.rawValue) }
+    func headerItems(_ wing: NotchWing) -> [String] {
+        preferences.values.tabLayout.normalized().items(in: wing).filter { item in
+            if let tab = Tab(rawValue: item) { return isTabVisible(tab) || (tab == .codex && !agentActions.prompts.isEmpty) }
+            return item != NotchTabLayout.pin || !preferences.values.tabLayout.hidePin
+        }
+    }
+    func activateHeader(_ item: String) {
+        if let tab = Tab(rawValue: item) {
+            activateTab(tab)
+            if tab == .codex && !agentActions.prompts.isEmpty { agentActions.showPending() }
+        } else if item == NotchTabLayout.settings { openSettings() }
+        else if item == NotchTabLayout.visibility { preferences.values.fullScreenVisibility = preferences.values.fullScreenVisibility.next
+            toast.show(.init(symbol: preferences.values.fullScreenVisibility.icon, title: "Full-screen visibility", detail: preferences.values.fullScreenVisibility.title, postponesFullScreenHide: true)) }
+        else { pinned.toggle() }
+    }
+    func openPhotoBooth() {
+        selectTab(.overview)
+        setExpanded(false)
+        Task {
+            await camera.finishStopping()
+            do { try await ApplicationNavigationService.openPhotoBooth() }
+            catch { toast.show(.init(symbol: "camera", title: "Couldn’t open Photo Booth", detail: "Try opening Photo Booth from Applications.")) }
+        }
+    }
     private var lastExpandedTab: Tab = .overview
     private var closingTab: Tab = .overview
     // Logical navigation resets immediately; outgoing content keeps its identity while fading.
@@ -224,9 +255,10 @@ final class NotchViewModel: ObservableObject {
         }
         if !value { closingTab = tab }
         expanded = value
+        if preferences.values.hapticFeedback { haptics.play(.expansion) }
         if value {
-            let next = requestedTab ?? (preferences.values.rememberLastTab ? lastExpandedTab : .overview)
-            selectTab(isTabVisible(next) ? next : .overview)
+            let next = requestedTab ?? (preferences.values.rememberLastTab ? lastExpandedTab : preferences.values.startingTab)
+            selectTab(isTabVisible(next) ? next : (NotchTab.allCases.first(where: isTabVisible) ?? .overview))
         } else {
             lastExpandedTab = tab == .mirror ? .overview : tab
             // Camera always returns to Home after collapsing.
@@ -258,7 +290,7 @@ final class NotchViewModel: ObservableObject {
     }
     func start() {
         guard ticker == nil else { return }
-        readActivity(); clock.refresh(); music.refresh(); agenda.refresh(); fans.refresh()
+        lyricsProvider.load(); readActivity(); clock.refresh(); music.refresh(); agenda.refresh(); fans.refresh()
         ticker = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
         if let ticker { RunLoop.main.add(ticker, forMode: .common) }
     }
@@ -268,13 +300,13 @@ final class NotchViewModel: ObservableObject {
         battery.tick(at: current, values: preferences.values, canPresent: canPresentNotices() && !thermal.active)
         thermal.tick(snapshot: fans.snapshot, at: current, enabled: preferences.values.thermalAlerts, canPresent: canPresentNotices() && !battery.active)
         if !music.lyrics.enabled && (expanded && tab == .overview || ticks % 4 == 0) { music.updatePosition() }
-        if ticks % 2 == 0 { clock.refresh() }
+        clock.refreshIfNeeded()
         readActivity()
         if ticks % 8 == 0 { music.refresh(); fans.refresh() }
         if ticks % 240 == 0 { agenda.refresh() }
     }
     func readActivity() {
         if !isPreview { agentActions.refresh(tasks: codeDashboard.tasks, channels: codeChannels) }
-        codexMonitor.refresh(bridge: bridgeFolder.appendingPathComponent("activity.json"), selection: monitoredSelection, account: monitoredAccount)
+        codexMonitor.refreshIfNeeded(bridge: bridgeFolder.appendingPathComponent("activity.json"), selection: monitoredSelection, account: monitoredAccount)
     }
 }

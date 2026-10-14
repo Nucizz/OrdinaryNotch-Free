@@ -4,10 +4,13 @@ import SwiftUI
 struct NotchWelcomeView: View {
     let reduceMotion: Bool
     var getStarted: () -> Void = {}
+    var skip: () -> Void = {}
     @State private var firstStroke: CGFloat = 0
     @State private var remainingStroke: CGFloat = 0
     @State private var ready = false
     @State private var animationID: UUID?
+    @State private var continued = false
+    @State private var progress = 0.0
 
     var body: some View {
         VStack(spacing: 22) {
@@ -20,11 +23,14 @@ struct NotchWelcomeView: View {
             .frame(width: 230, height: 230 * 200 / 638)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Hello")
-            Button("Get Started", action: getStarted)
-                .font(.system(size: 12, weight: .semibold))
-                .buttonStyle(WelcomeButtonStyle(reduceMotion: reduceMotion))
-                .disabled(!reduceMotion && !ready)
-                .accessibilityHint(ready || reduceMotion ? "Open Settings" : "Available when the greeting finishes")
+            NotchActionButton(title: "Get Started", progress: progress, hint: "Open Ordinary Notch Settings") {
+                guard !continued else { return }
+                continued = true
+                getStarted()
+            }
+                .environment(\.notchReduceMotion, reduceMotion)
+                .disabled(continued || (!reduceMotion && !ready))
+                .accessibilityHint(ready || reduceMotion ? "Open Settings. This welcome closes automatically after five seconds." : "Available when the greeting finishes")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: reduceMotion) {
@@ -44,21 +50,24 @@ struct NotchWelcomeView: View {
                 ready = true
             }
         }
+        .task(id: ready) {
+            guard ready, !continued else { return }
+            progress = 0
+            let clock = ContinuousClock()
+            let started = clock.now
+            if !reduceMotion { withAnimation(.linear(duration: 5)) { progress = 1 } }
+            do {
+                for second in 1...5 {
+                    try await clock.sleep(until: started.advanced(by: .seconds(second)))
+                    guard !Task.isCancelled, !continued else { return }
+                    if reduceMotion { progress = Double(second) / 5 }
+                }
+            } catch { return }
+            guard !Task.isCancelled, !continued else { return }
+            continued = true
+            skip()
+        }
         .onDisappear { animationID = nil }
-    }
-}
-
-private struct WelcomeButtonStyle: ButtonStyle {
-    let reduceMotion: Bool
-    @Environment(\.isEnabled) private var isEnabled
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(isEnabled ? Color.black : Color.white.opacity(0.4))
-            .frame(width: 116, height: 32)
-            .background(isEnabled ? Color.white.opacity(configuration.isPressed ? 0.8 : 1) : Color.white.opacity(0.12),
-                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: isEnabled)
     }
 }
 

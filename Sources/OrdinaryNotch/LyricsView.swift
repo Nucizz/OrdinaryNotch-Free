@@ -27,48 +27,75 @@ struct LyricsView: View {
     }
 }
 
-struct FloatingLyricsView: View {
+/// Keep both dimensions in one animation, independent of the island's reveal mask.
+struct FloatingLyricsLayer: View, Animatable {
     @ObservedObject var music: MusicViewModel
-    var notchWidth: CGFloat
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    var width: CGFloat
+    var top: CGFloat
+    var glowHeight: CGFloat
+    let textWidth: CGFloat
+    var showsText = true
+    var showsGlow = true
+    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, CGFloat> {
+        get { AnimatablePair(AnimatablePair(width, top), glowHeight) }
+        set { width = newValue.first.first; top = newValue.first.second; glowHeight = newValue.second }
+    }
     var body: some View {
-        LyricsView(model: music.lyrics, shadowed: true, rowHeight: 36)
-            .background(alignment: .top) {
-                GeometryReader { geometry in
-                    Group {
-                        if let backdrop = music.backdrop {
-                            Image(nsImage: backdrop).resizable().scaledToFill()
-                        } else {
-                            music.accentColor
-                        }
-                    }
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .clipped()
-                    .opacity(reduceTransparency ? 1 : 0.60)
-                    .mask { NotchLyricsCloud() }
-                }
-                .frame(width: max(notchWidth, 400) + 48, height: 80)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+        ZStack(alignment: .top) {
+            if showsGlow {
+                FloatingLyricsGlow(music: music, width: max(0, width), height: max(0, glowHeight))
+                    .offset(y: -max(0, glowHeight) / 2)
             }
+            if showsText { LyricsView(model: music.lyrics, shadowed: true, rowHeight: 36).frame(width: textWidth) }
+        }
+        .frame(width: textWidth, height: 112, alignment: .top)
+        .offset(y: top)
+        .allowsHitTesting(false)
     }
 }
 
-/// A broad, elliptical falloff centered on the notch edge, like a cloud of blurred album color.
+struct FloatingLyricsGlow: View {
+    @ObservedObject var music: MusicViewModel
+    let width: CGFloat
+    let height: CGFloat
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                music.accentColor
+                if let backdrop = music.backdrop {
+                    Image(nsImage: backdrop).resizable().scaledToFill()
+                        .opacity(0.65)
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
+            .opacity(reduceTransparency ? 0 : 0.38)
+            .mask {
+                NotchLyricsCloud()
+            }
+        }
+        .frame(width: width, height: height)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// An elliptical falloff below the centered surface group.
 private struct NotchLyricsCloud: View {
     var body: some View {
         Canvas { context, size in
-            // Scale a circular blur into a wide cloud. The upper half stays behind the notch.
-            context.scaleBy(x: size.width / 2, y: size.height)
+            // Fit the whole ellipse; every edge fades out before the view ends.
+            context.scaleBy(x: size.width / 2, y: size.height / 2)
             let fade = Gradient(stops: [
                 .init(color: .white, location: 0),
-                .init(color: .white.opacity(0.88), location: 0.25),
-                .init(color: .white.opacity(0.42), location: 0.55),
-                .init(color: .white.opacity(0.08), location: 0.82),
+                .init(color: .white.opacity(0.94), location: 0.25),
+                .init(color: .white.opacity(0.65), location: 0.55),
+                .init(color: .white.opacity(0.16), location: 0.82),
                 .init(color: .clear, location: 1)
             ])
-            context.fill(Path(CGRect(x: 0, y: 0, width: 2, height: 1)),
-                         with: .radialGradient(fade, center: CGPoint(x: 1, y: 0), startRadius: 0, endRadius: 1))
+            context.fill(Path(CGRect(x: 0, y: 0, width: 2, height: 2)),
+                         with: .radialGradient(fade, center: CGPoint(x: 1, y: 1), startRadius: 0, endRadius: 1))
         }
     }
 }

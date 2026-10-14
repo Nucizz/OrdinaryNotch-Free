@@ -29,7 +29,21 @@ final class AgentActionViewModel: ObservableObject {
         measuredPrompt = (id, value)
     }
     @Published private var deferred: Set<String> = []
-    var current: AgentPrompt? { previewPrompt ?? prompts.first { !deferred.contains($0.id) } }
+    @Published private var foreground = ForegroundActivityContext()
+    var visiblePrompts: [AgentPrompt] { prompts.filter { !foreground.suppresses($0.task) } }
+    var current: AgentPrompt? { previewPrompt ?? visiblePrompts.first { !deferred.contains($0.id) } }
+    func updateForeground(_ context: ForegroundActivityContext) {
+        guard foreground != context else { return }
+        foreground = context
+        claude.updateForeground(context)
+        prompts = prompts.map { prompt in
+            if prompt.task.provider == .claude, prompt.kind != .handoff, context.suppresses(prompt.task) {
+                return CodexPromptService.handoff(prompt.task)
+            }
+            return prompt
+        }
+        error = nil
+    }
     var focus: () -> Void = {}
     private let claude = ClaudePromptService()
     private let codex = CodexPromptService()
@@ -85,7 +99,13 @@ final class AgentActionViewModel: ObservableObject {
                 guard let self else { return }
                 self.busy = false
                 guard self.enabled, self.refreshGeneration == generation, self.channels == channels else { return }
-                self.apply(self.stablePrompts(prompts))
+                // Focus may have released a hook while this refresh was in flight.
+                let liveClaude = Set(claude.prompts.map(\.id))
+                let currentPrompts = prompts.map { prompt in
+                    prompt.task.provider == .claude && prompt.kind != .handoff && !liveClaude.contains(prompt.id)
+                        ? CodexPromptService.handoff(prompt.task) : prompt
+                }
+                self.apply(self.stablePrompts(currentPrompts))
             }
         }
     }
@@ -115,7 +135,19 @@ final class AgentActionViewModel: ObservableObject {
         if prompts != filtered { prompts = filtered }
         if current?.id != previous { error = nil }
     }
-    func showPending() { deferred.removeAll(); focus() }
+    func showPending() { deferred.removeAll(); if current != nil { focus() } }
+    @discardableResult func showPending(for task: CodeTask) -> Bool {
+        guard !sending, let prompt = visiblePrompts.first(where: {
+            $0.task.provider == task.provider && $0.task.account == task.account && Self.taskKey($0.task) == Self.taskKey(task)
+        }) else { return false }
+        // Select only the requested conversation; do not surface a different
+        // account's approval when returning from a lock-screen activity.
+        prompts = [prompt] + prompts.filter { $0.id != prompt.id }
+        deferred.remove(prompt.id)
+        error = nil
+        focus()
+        return true
+    }
     func later() {
         if isPreviewing { dismissPreview(); return }
         guard let prompt = current, !sending else { return }

@@ -34,6 +34,12 @@ struct NowPlayingSnapshot: Decodable {
 struct NowPlayingTimeline {
     private var reported: NowPlayingSnapshot?
     private(set) var snapshot: NowPlayingSnapshot?
+    mutating func seek(to seconds: Double, at now: Date) {
+        guard seconds.isFinite, var current = snapshot, current.duration > 0 else { return }
+        current.elapsedTimeMicros = min(current.duration, max(0, seconds)) * 1_000_000
+        current.timestampEpochMicros = now.timeIntervalSince1970 * 1_000_000
+        snapshot = current
+    }
     mutating func update(_ next: NowPlayingSnapshot?, at now: Date) {
         defer { reported = next }
         guard var next else { snapshot = nil; return }
@@ -136,11 +142,27 @@ final class NowPlayingClient {
     }
 
     func send(_ command: String, completion: @escaping @MainActor (Bool) -> Void) {
-        guard let number = ["playpause": 2, "next track": 4, "previous track": 5][command],
-              let script, let framework else { completion(false); return }
+        // kMRPause (1), unlike kMRTogglePlayPause (2), cannot start a paused player.
+        guard let number = Self.commandNumber(command) else { completion(false); return }
+        run(["send", String(number)], completion: completion)
+    }
+    static func commandNumber(_ command: String) -> Int? {
+        ["pause": 1, "playpause": 2, "next track": 4, "previous track": 5][command]
+    }
+    static func seekArguments(seconds: Double) -> [String]? {
+        let micros = seconds * 1_000_000
+        guard micros.isFinite, micros >= 0, micros < Double(Int64.max) else { return nil }
+        return ["seek", String(Int64(micros))]
+    }
+    func seek(to seconds: Double, completion: @escaping @MainActor (Bool) -> Void) {
+        guard let arguments = Self.seekArguments(seconds: seconds) else { completion(false); return }
+        run(arguments, completion: completion)
+    }
+    private func run(_ arguments: [String], completion: @escaping @MainActor (Bool) -> Void) {
+        guard let script, let framework else { completion(false); return }
         let process = Process(), id = UUID()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-        process.arguments = [script.path, framework.path, "send", String(number)]
+        process.arguments = [script.path, framework.path] + arguments
         process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
         commands[id] = process
         process.terminationHandler = { [weak self] process in

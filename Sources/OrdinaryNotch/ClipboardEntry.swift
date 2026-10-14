@@ -42,6 +42,8 @@ struct ClipboardEntry: Identifiable {
             kind = .text
             title = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(180))
             searchText = String(text.prefix(8_000))
+        } else if !text.isEmpty {
+            kind = .text; title = "Whitespace"; searchText = text
         } else if imageData != nil {
             kind = .image; title = "Copied image"; searchText = title
         } else {

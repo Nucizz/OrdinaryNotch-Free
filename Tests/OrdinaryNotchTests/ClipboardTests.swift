@@ -117,7 +117,7 @@ final class ClipboardTests: XCTestCase {
         board.clearContents(); XCTAssertTrue(board.writeObjects([rich]))
         let captured = ClipboardEntry(contents: try XCTUnwrap(ClipboardService.readContents(from: board)))
         XCTAssertEqual(captured.title, "hello")
-        let service = ClipboardService(pasteboard: board)
+        let service = ClipboardService(pasteboard: board, secureInputEnabled: { false })
         XCTAssertTrue(service.write(captured))
         XCTAssertEqual(board.string(forType: .html), "<b>hello</b>")
         XCTAssertNil(ClipboardService.readContents(from: board), "Our own copy-back must not enter history")
@@ -144,7 +144,7 @@ final class ClipboardTests: XCTestCase {
         let board = NSPasteboard.withUniqueName()
         defer { board.releaseGlobally() }
         board.setString("before opt-in", forType: .string)
-        let service = ClipboardService(pasteboard: board)
+        let service = ClipboardService(pasteboard: board, secureInputEnabled: { false })
         var captured: [ClipboardEntry] = []
         service.start { captured.append($0) }
         defer { service.stop() }
@@ -169,4 +169,17 @@ final class ClipboardTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(60))
         XCTAssertEqual(captured.count, 1)
     }
+    @MainActor func testSecureInputPreventsNewCopiesFromBeingCaptured() async throws {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let service = ClipboardService(pasteboard: board, secureInputEnabled: { true })
+        var captured: [ClipboardEntry] = []
+        service.start { captured.append($0) }
+        defer { service.stop() }
+        board.clearContents(); board.setString("private fixture", forType: .string)
+        service.poll()
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertTrue(captured.isEmpty)
+    }
+
 }

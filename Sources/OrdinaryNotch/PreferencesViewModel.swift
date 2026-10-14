@@ -11,6 +11,7 @@ final class PreferencesViewModel: ObservableObject {
     private let storage: PreferencesStore
     @Published var values: Values {
         didSet {
+            if values != values.normalized() { values = values.normalized() }
             guard values != oldValue else { return }
             storage.save(values.normalized())
         }

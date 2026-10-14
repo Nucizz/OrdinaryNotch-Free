@@ -1,4 +1,5 @@
 import Foundation
+import ActivityCore
 
 enum ClockFormat {
     static func format(_ seconds: TimeInterval) -> String {
@@ -21,6 +22,8 @@ struct CodexActivity: Codable, Equatable {
     var project: String?
     var usage: CodexUsage?
     var attention: String?
+    var computerControl: ComputerControlState?
+    func isControllingComputer(at now: Date) -> Bool { isWorking && computerControl?.isActive(at: now) == true }
     enum Presentation: Equatable { case working, complete, input, warning, stopped, idle }
     var isBlocked: Bool {
         ["blocked", "limited", "rate_limited", "usage_limit_reached", "failed"].contains(state)

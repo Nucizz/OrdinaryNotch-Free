@@ -21,16 +21,22 @@ struct AgentPromptView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            VStack(spacing: 12) { header; Divider() }
+            VStack(spacing: 12) {
+                header
+                if prompt.questions.isEmpty { Divider() }
+            }
                 .promptMeasure("header")
             ScrollViewReader { proxy in
                 ScrollView {
                     promptContent.fixedSize(horizontal: false, vertical: true)
+                        .id("question-top")
                         .promptMeasure("content")
                 }
+                .promptScrollEdgesHidden()
                 .onChange(of: selected) { _, index in
                     if let index { proxy.scrollTo(index) }
                 }
+                .onChange(of: questionIndex) { _, _ in proxy.scrollTo("question-top", anchor: .top) }
             }
             .frame(height: min(measured["content"] ?? 24, max(44, maximumHeight - (measured["header"] ?? 48) - (measured["footer"] ?? 100) - 40)))
             VStack(alignment: .leading, spacing: 10) {
@@ -39,7 +45,7 @@ struct AgentPromptView: View {
                     Label(error, systemImage: "exclamationmark.circle")
                         .font(.system(size: 12)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
-                Divider()
+                if prompt.questions.isEmpty { Divider() }
                 footer
             }.fixedSize(horizontal: false, vertical: true).promptMeasure("footer")
         }
@@ -70,14 +76,20 @@ struct AgentPromptView: View {
                 selected = nil; return .handled
             }
             if key.key == .space {
-                if question.multiple, let selected { choose(selected); return .handled }
+                if let selected { choose(selected); return .handled }
                 return .ignored
             }
-            if key.key == .return { advanceOrSend(); return .handled }
+            if key.key == .return {
+                if !question.multiple, let selected { choose(selected) }
+                else { advanceOrSend() }
+                return .handled
+            }
             guard !question.options.isEmpty else { return .ignored }
             let delta = key.key == .downArrow ? 1 : -1
             let index = ((selected ?? (delta > 0 ? -1 : 0)) + delta + question.options.count) % question.options.count
-            if !question.multiple { choose(index) } else { selected = index }
+            // Browsing choices must never send an answer. Click, a number key,
+            // Space or Return explicitly activates the highlighted option.
+            selected = index
             return .handled
         }
         .onKeyPress(characters: .decimalDigits, phases: .down) { key in
@@ -109,12 +121,16 @@ struct AgentPromptView: View {
                                     }
                                 }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .buttonStyle(AgentPromptButtonStyle(filled: isChosen(option), outlined: question.multiple && selected == index))
+                            .buttonStyle(NotchButtonStyle(isChosen(option) ? .selected : .standard,
+                                outlined: selected == index, padded: false, scalesOnHover: false))
                             .disabled(model.sending)
                             .id(index)
+                            .notchHint("\(question.multiple ? "Select" : "Answer") \(option)")
                             .accessibilityLabel("\(index + 1). \(option)")
+                            .accessibilityIdentifier("agent-option-\(question.id)-\(index)")
                             .accessibilityValue(isChosen(option) ? "Selected" : "Not selected")
-                            .accessibilityHint(index < 9 ? "Press \(index + 1) to select, then Return to send." : "Select, then Return to send.")
+                            .accessibilityHint(question.multiple ? "Select any choices, then press Return to continue." :
+                                "Answers this question immediately.\(index < 9 ? " Shortcut: \(index + 1)." : "")")
                         }
                     }
                 }
@@ -166,7 +182,7 @@ struct AgentPromptView: View {
                         Text(prompt.task.activity.taskName ?? prompt.task.activity.title).lineLimit(1)
                         Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .medium))
                     }.font(.system(size: 13, weight: .semibold))
-                }.buttonStyle(.plain).foregroundStyle(.white).disabled(model.isPreviewing).help(model.isPreviewing ? "Sample task" : "Open this task")
+                }.buttonStyle(NotchButtonStyle(.plain)).foregroundStyle(.white).disabled(model.isPreviewing).notchHint(model.isPreviewing ? "Sample task" : "Open this task")
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 3) {
@@ -196,36 +212,34 @@ struct AgentPromptView: View {
         let numbers = count > 1 ? "1–\(count)" : "1"
         let action = questionIndex < prompt.questions.count - 1 ? "next" : "send"
         if question?.multiple == true { return "\(numbers) toggle · Return \(action)" }
-        return "\(numbers) select · Return \(action)"
+        return "\(numbers) answer · ↑↓ browse"
     }
 
     private var footer: some View {
         HStack(spacing: 8) {
             if prompt.questions.isEmpty && prompt.kind != .handoff {
-                AgentPromptActionButton(title: "Always Allow") {
+                NotchActionButton(title: "Always Allow", hint: prompt.alwaysAllowScope ?? "A reusable permission is not available for this action") {
                     model.submit(AgentAnswer(approve: true, alwaysAllow: true))
                 }.disabled(prompt.alwaysAllowPayload == nil)
-                    .help(prompt.alwaysAllowScope ?? "A reusable permission is not available for this action")
             } else {
-                AgentPromptActionButton(title: "Later", shortcut: prompt.questions.isEmpty ? nil : "⎋", action: model.later)
-                    .help("Leave this request pending")
+                NotchActionButton(title: "Later", shortcut: prompt.questions.isEmpty ? nil : "⎋", hint: "Leave this request pending", action: model.later)
             }
             if model.sending { ProgressView().controlSize(.small).accessibilityLabel("Sending response") }
             Spacer(minLength: 8)
             if !prompt.questions.isEmpty {
                 if questionIndex > 0 {
-                    AgentPromptActionButton(title: "Back") { questionIndex -= 1; selected = nil }
+                    NotchActionButton(title: "Back", hint: "Go to the previous question") { questionIndex -= 1; selected = nil }
                 }
-                AgentPromptActionButton(title: questionIndex < prompt.questions.count - 1 ? "Next" : "Send", prominent: true, shortcut: "↩", action: advanceOrSend)
+                NotchActionButton(title: questionIndex < prompt.questions.count - 1 ? "Next" : "Send", prominent: true, shortcut: "↩", hint: questionIndex < prompt.questions.count - 1 ? "Go to the next question" : "Send your answers to the agent", action: advanceOrSend)
                     .disabled((answers[question?.id ?? ""] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } else if prompt.kind == .handoff {
-                AgentPromptActionButton(title: "Open Task…", prominent: true, action: openSource)
+                NotchActionButton(title: "Open Task…", prominent: true, hint: "Open this task in its app", action: openSource)
             } else {
-                AgentPromptActionButton(title: "Deny", shortcut: "⎋") { model.submit(AgentAnswer(approve: false)) }
-                AgentPromptActionButton(title: "Allow", prominent: true, shortcut: "↩") { model.submit(AgentAnswer(approve: true)) }
+                NotchActionButton(title: "Deny", shortcut: "⎋", hint: "Deny this action") { model.submit(AgentAnswer(approve: false)) }
+                NotchActionButton(title: "Allow", prominent: true, shortcut: "↩", hint: "Allow this action once") { model.submit(AgentAnswer(approve: true)) }
                     .disabled(!prompt.canApprove)
             }
-        }.disabled(model.sending).help(shortcutHint)
+        }.disabled(model.sending)
     }
 
     private func openSource() {
@@ -238,7 +252,7 @@ struct AgentPromptView: View {
         return answers[question.id] == option
     }
     private func choose(_ index: Int) {
-        guard let question, question.options.indices.contains(index) else { return }
+        guard !model.sending, let question, question.options.indices.contains(index) else { return }
         selected = index; editing = false; promptFocused = true
         writtenAnswers[question.id] = ""
         let option = question.options[index]
@@ -247,51 +261,18 @@ struct AgentPromptView: View {
             if indices.contains(index) { indices.remove(index) } else { indices.insert(index) }
             multipleSelections[question.id] = indices
             answers[question.id] = indices.sorted().map { question.options[$0] }.joined(separator: ", ")
-        } else { answers[question.id] = option }
+        } else {
+            answers[question.id] = option
+            advanceOrSend()
+        }
     }
     private func advanceOrSend() {
         guard !model.sending, let question, !(answers[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         if questionIndex < prompt.questions.count - 1 { questionIndex += 1; selected = nil; editing = false }
         else if canSend { model.submit(AgentAnswer(answers: answers)) }
-    }
-}
-
-/// Ordinary Notch controls keep native button semantics with monochrome states.
-private struct AgentPromptActionButton: View {
-    let title: String
-    var prominent = false
-    var shortcut: String? = nil
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Text(title).font(.system(size: 12, weight: .medium))
-                if let shortcut { Text(shortcut).font(.system(size: 11)).opacity(0.6).accessibilityHidden(true) }
-            }.padding(.horizontal, 12).frame(minHeight: 32)
+        else if let unanswered = prompt.questions.firstIndex(where: { (answers[$0.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+            questionIndex = unanswered; selected = nil; editing = false
         }
-        .buttonStyle(AgentPromptButtonStyle(filled: prominent))
-        .keyboardShortcut(shortcut == "↩" ? KeyboardShortcut.defaultAction : (shortcut == "⎋" ? KeyboardShortcut.cancelAction : nil))
-    }
-}
-
-private struct AgentPromptButtonStyle: ButtonStyle {
-    var filled = false
-    var outlined = false
-    @Environment(\.isEnabled) private var enabled
-    @Environment(\.isFocused) private var focused
-    @State private var hovering = false
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(filled ? Color.black : Color.white)
-            .background(filled ? Color.white.opacity(configuration.isPressed ? 0.75 : 1) :
-                            Color.white.opacity(configuration.isPressed ? 0.2 : (hovering ? 0.14 : 0.07)),
-                        in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.white.opacity(focused || outlined ? 0.8 : (filled ? 0 : 0.14)), lineWidth: 1))
-            .contentShape(RoundedRectangle(cornerRadius: 8))
-            .opacity(enabled ? 1 : 0.35)
-            .onHover { hovering = $0 }
-            .focusEffectDisabled()
     }
 }
 
@@ -302,6 +283,10 @@ private struct AgentPromptMeasureKey: PreferenceKey {
     }
 }
 private extension View {
+    @ViewBuilder func promptScrollEdgesHidden() -> some View {
+        if #available(macOS 26, *) { scrollEdgeEffectHidden() }
+        else { self }
+    }
     func promptMeasure(_ section: String) -> some View {
         background(GeometryReader { proxy in
             Color.clear.preference(key: AgentPromptMeasureKey.self, value: [section: ceil(proxy.size.height)])

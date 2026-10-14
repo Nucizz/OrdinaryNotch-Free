@@ -44,10 +44,3 @@ struct PointerCursor: NSViewRepresentable {
 extension View {
     func pointingCursor(_ active: Bool = true) -> some View { background(PointerCursor(active: active).accessibilityHidden(true)) }
 }
-
-/// Keep native Settings buttons while applying the same pointer as notch buttons.
-struct SettingsButtonStyle: PrimitiveButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        Button(configuration).buttonStyle(.bordered).pointingCursor()
-    }
-}

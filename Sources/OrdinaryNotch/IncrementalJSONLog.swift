@@ -11,14 +11,18 @@ final class IncrementalJSONLog<State> {
     }
     private var cache: [String: Entry] = [:]
     private(set) var lastReadBytes = 0
+    private(set) var lastReadComplete = false
     func read(_ url: URL, initial: @autoclosure () -> State, bootstrap: ((FileHandle, UInt64) -> (UInt64, State))? = nil, parse: (Data, State) -> State) -> State? {
-        lastReadBytes = 0
+        lastReadBytes = 0; lastReadComplete = false
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = (attrs[.size] as? NSNumber)?.uint64Value,
               let modified = attrs[.modificationDate] as? Date else { return nil }
         let inode = (attrs[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
         let previous = cache[url.path]
-        if let previous, previous.offset == size, previous.modified == modified, previous.inode == inode { return previous.state }
+        if let previous, previous.offset == size, previous.modified == modified, previous.inode == inode {
+            lastReadComplete = previous.pending.isEmpty
+            return previous.state
+        }
         let append = previous.map { $0.inode == inode && size > $0.offset } ?? false
         var entry = append ? previous! : Entry(offset: 0, modified: modified, inode: inode, state: initial(), pending: Data())
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
@@ -39,6 +43,7 @@ final class IncrementalJSONLog<State> {
             if entry.pending.count > 4 * 1024 * 1024 { entry.pending.removeAll(keepingCapacity: false) }
         }
         entry.modified = modified; entry.inode = inode
+        lastReadComplete = entry.offset == size && entry.pending.isEmpty
         cache[url.path] = entry
         return entry.state
     }

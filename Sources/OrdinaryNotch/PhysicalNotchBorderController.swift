@@ -39,8 +39,7 @@ final class PhysicalNotchBorderController {
             window.ignoresMouseEvents = true
             window.hidesOnDeactivate = false
             window.isMovable = false
-            window.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
-            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenNone, .stationary]
+            NotchWindowPolicy.configure(window, diagnostic: true)
             window.contentView = PhysicalNotchBorderView(frame: CGRect(origin: .zero, size: frame.size))
             panel = window
         }

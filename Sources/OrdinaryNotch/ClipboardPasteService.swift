@@ -35,7 +35,12 @@ enum ClipboardPasteResult: Equatable {
     private let system: ClipboardPasteSystem
     private var destination: pid_t?
     private var generation = UUID()
-    init(system: ClipboardPasteSystem? = nil) { self.system = system ?? MacClipboardPasteSystem() }
+    private let waitForFocus: @MainActor () async throws -> Void
+    init(system: ClipboardPasteSystem? = nil,
+         waitForFocus: @escaping @MainActor () async throws -> Void = { try await Task.sleep(for: .milliseconds(100)) }) {
+        self.system = system ?? MacClipboardPasteSystem()
+        self.waitForFocus = waitForFocus
+    }
     func captureDestination() {
         cancel()
         destination = system.captureDestination()
@@ -52,7 +57,7 @@ enum ClipboardPasteResult: Equatable {
         guard let destination else { return .destinationChanged }
         let generation = generation, change = system.clipboardChange
         // Let the nonactivating panel relinquish keyboard focus before delivering ⌘V.
-        do { try await Task.sleep(for: .milliseconds(100)) } catch { return .cancelled }
+        do { try await waitForFocus() } catch { return .cancelled }
         guard !Task.isCancelled, generation == self.generation else { return .cancelled }
         guard system.sessionIsActive, system.isCurrentDestination(destination) else { return .destinationChanged }
         guard system.clipboardChange == change else { return .clipboardChanged }

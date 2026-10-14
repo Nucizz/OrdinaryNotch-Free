@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import SQLite3
+import ActivityCore
 
 struct CodexSessionStatus {
     var state = "idle"
@@ -13,6 +14,7 @@ struct CodexSessionStatus {
     var usage: CodexUsage?
     var hasUserInteraction = false
     var attention = CodexAttention()
+    var computerControl = ComputerControlState()
 
     /// Reads lifecycle, request IDs, usage metadata, and a short user task label.
     static func parse(_ data: Data, continuing previous: CodexSessionStatus = CodexSessionStatus()) -> CodexSessionStatus {
@@ -26,6 +28,18 @@ struct CodexSessionStatus {
                   let stamp = event["timestamp"] as? String,
                   let date = fractional.date(from: stamp) ?? plain.date(from: stamp) else { continue }
             if event["type"] as? String == "response_item" {
+                if let type = payload["type"] as? String, let call = payload["call_id"] as? String {
+                    if ["function_call", "custom_tool_call"].contains(type),
+                       let name = payload["name"] as? String,
+                       let raw = (payload["arguments"] ?? payload["input"]) as? String,
+                       let input = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                       ComputerControlTool.isControl(name: name, input: input) {
+                        status.computerControl.start(call, at: date)
+                        status.updatedAt = max(status.updatedAt, date)
+                    } else if ["function_call_output", "custom_tool_call_output"].contains(type) {
+                        status.computerControl.finish(call, at: date)
+                    }
+                }
                 let before = status.attention.reason
                 status.attention.observe(payload)
                 if before != status.attention.reason { status.updatedAt = date }
@@ -54,6 +68,7 @@ struct CodexSessionStatus {
             guard event["type"] as? String == "event_msg", let type = payload["type"] as? String else { continue }
             switch type {
             case "task_started", "turn_started":
+                status.computerControl.reset()
                 status.attention.finishTurn()
                 status.state = "running"; status.detail = "Working in Codex"
                 status.startedAt = (payload["started_at"] as? Double).map(Date.init(timeIntervalSince1970:)) ?? date
@@ -124,7 +139,8 @@ struct CodexSessionStatus {
         let stale = state == "running" && attention.reason == nil && now.timeIntervalSince(updatedAt) > 300
         return CodexActivity(title: title, detail: stale ? "No recent activity · status unavailable" : detail,
                              state: stale ? "unknown" : state, updatedAt: updatedAt, startedAt: startedAt, goalStartedAt: goalStartedAt,
-                             finishedAt: finishedAt, taskName: taskName, usage: usage, attention: attention.reason)
+                             finishedAt: finishedAt, taskName: taskName, usage: usage, attention: attention.reason,
+                             computerControl: computerControl)
     }
 }
 
@@ -136,6 +152,9 @@ final class CodexActivityReader: @unchecked Sendable {
     private let logs = IncrementalJSONLog<CodexSessionStatus>()
     private let readState = CodexReadStateReader()
     private let replies = CodexQuestionReplyReader()
+    private struct Schema { let inode: UInt64; let version: Int32; let columns: Set<String> }
+    private var schemas: [String: Schema] = [:]
+    private(set) var monitoringAvailable = false
     let roots: [URL]
 
     init(roots: [URL] = CodexActivityReader.discoverRoots()) { self.roots = roots }
@@ -150,11 +169,17 @@ final class CodexActivityReader: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         var activities: [CodeTask] = []
         var seenPaths = Set<String>()
+        var health = CodeMonitoringHealth()
         for root in profileRoots ?? roots {
-            let databases = ((try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [])
+            let profileID = root.standardizedFileURL.resolvingSymlinksInPath().path
+            let databases = health.contents(of: root)
                 .filter { $0.lastPathComponent.hasPrefix("state_") && $0.pathExtension == "sqlite" }
                 .sorted { $0.lastPathComponent.compare($1.lastPathComponent, options: .numeric) == .orderedDescending }
-            guard let database = databases.first, let entries = entries(database: database, root: root) else { continue }
+            guard let database = databases.first else {
+                if !health.contents(of: root.appendingPathComponent("sessions")).isEmpty { health.available = false }
+                continue
+            }
+            guard let entries = entries(database: database, root: root) else { health.available = false; continue }
             let unread = readState.unreadThreads(in: root)
             let submitted = replies.read(root: root, now: now)
             let firstActivity = activities.count
@@ -163,7 +188,8 @@ final class CodexActivityReader: @unchecked Sendable {
                     CodexLogBootstrap.read(handle, size: size, hasUserEvent: entry.hasUserEvent)
                 }, parse: { data, prior in
                     CodexSessionStatus.parse(data, continuing: prior)
-                }) else { continue }
+                }) else { health.available = false; continue }
+                if !logs.lastReadComplete || status.updatedAt == .distantPast { health.available = false }
                 for reply in submitted[entry.threadID ?? ""] ?? [] {
                     let before = status.attention.reason
                     status.attention.acknowledge(call: reply.callID, index: reply.index)
@@ -172,7 +198,7 @@ final class CodexActivityReader: @unchecked Sendable {
                 if status.updatedAt != .distantPast, !entry.requiresUserInteraction || status.hasUserInteraction {
                     var activity = status.activity(title: entry.title, now: now)
                     activity.model = entry.model; activity.project = entry.project
-                    activities.append(CodeTask(id: entry.path.path, provider: .codex, activity: activity, profileID: root.standardizedFileURL.resolvingSymlinksInPath().path, completionWasRead: CodexReadStateReader.wasRead(threadID: entry.threadID, activity: activity, unread: unread, now: now), threadID: entry.threadID, pendingQuestions: status.attention.pendingAsyncQuestions))
+                    activities.append(CodeTask(id: entry.path.path, provider: .codex, activity: activity, profileID: profileID, completionWasRead: CodexReadStateReader.wasRead(threadID: entry.threadID, activity: activity, unread: unread, now: now), threadID: entry.threadID, pendingQuestions: status.attention.pendingAsyncQuestions))
                 }
             }
             // Usage is account-wide. Use the newest snapshot from this profile only.
@@ -181,10 +207,12 @@ final class CodexActivityReader: @unchecked Sendable {
                 for index in indices { activities[index].activity.usage = usage }
             }
         }
+        monitoringAvailable = health.available
         logs.retain(paths: seenPaths)
         return activities
     }
     private func entries(database: URL, root: URL) -> [Entry]? {
+        let inode = (try? FileManager.default.attributesOfItem(atPath: database.path)[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
         var db: OpaquePointer?
         guard sqlite3_open_v2(database.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK else {
             if db != nil { sqlite3_close(db) }; return nil
@@ -192,14 +220,7 @@ final class CodexActivityReader: @unchecked Sendable {
         defer { sqlite3_close(db) }
         sqlite3_busy_timeout(db, 100)
         var statement: OpaquePointer?
-        var schema: OpaquePointer?
-        var columns = Set<String>()
-        if sqlite3_prepare_v2(db, "PRAGMA table_info(threads)", -1, &schema, nil) == SQLITE_OK {
-            while sqlite3_step(schema) == SQLITE_ROW {
-                if let bytes = sqlite3_column_text(schema, 1) { columns.insert(String(cString: bytes)) }
-            }
-        }
-        sqlite3_finalize(schema)
+        let columns = schemaColumns(database: database, inode: inode, db: db)
         let titleColumn = columns.contains("name") ? "COALESCE(NULLIF(name, ''), title)" : "title"
         let modelColumn = columns.contains("model") ? "model" : "NULL"
         let cwdColumn = columns.contains("cwd") ? "cwd" : "NULL"
@@ -216,7 +237,9 @@ final class CodexActivityReader: @unchecked Sendable {
         defer { sqlite3_finalize(statement) }
         var entries: [Entry] = []
         let prefix = root.appendingPathComponent("sessions").resolvingSymlinksInPath().path + "/"
-        while sqlite3_step(statement) == SQLITE_ROW {
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            defer { step = sqlite3_step(statement) }
             guard let pathBytes = sqlite3_column_text(statement, 1) else { continue }
             let path = URL(fileURLWithPath: String(cString: pathBytes)).resolvingSymlinksInPath()
             guard path.path.hasPrefix(prefix), path.pathExtension == "jsonl" else { continue }
@@ -227,6 +250,23 @@ final class CodexActivityReader: @unchecked Sendable {
             let isHandoff = sqlite3_column_text(statement, 6).map { String(cString: $0) } == "chatgpt_handoff"
             entries.append(Entry(threadID: threadID, title: title.isEmpty ? "Codex task" : String(title.prefix(200)), path: path, model: model, project: project, requiresUserInteraction: columns.contains("thread_source") && !isHandoff, hasUserEvent: sqlite3_column_int(statement, 5) != 0))
         }
-        return entries
+        return step == SQLITE_DONE ? entries : nil
+    }
+    private func schemaColumns(database: URL, inode: UInt64, db: OpaquePointer?) -> Set<String> {
+        var statement: OpaquePointer?
+        var version: Int32 = -1
+        if sqlite3_prepare_v2(db, "PRAGMA schema_version", -1, &statement, nil) == SQLITE_OK,
+           sqlite3_step(statement) == SQLITE_ROW { version = sqlite3_column_int(statement, 0) }
+        sqlite3_finalize(statement); statement = nil
+        if inode != 0, version >= 0, let cached = schemas[database.path], cached.inode == inode, cached.version == version { return cached.columns }
+        var columns = Set<String>()
+        if sqlite3_prepare_v2(db, "PRAGMA table_info(threads)", -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let bytes = sqlite3_column_text(statement, 1) { columns.insert(String(cString: bytes)) }
+            }
+        }
+        sqlite3_finalize(statement)
+        if !columns.isEmpty { schemas[database.path] = Schema(inode: inode, version: version, columns: columns) }
+        return columns
     }
 }

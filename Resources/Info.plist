@@ -15,9 +15,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.2.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSMultipleInstancesProhibited</key>
@@ -29,11 +29,13 @@
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Show today's calendar events in your notch. Ordinary Notch does not edit your calendar.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Show a live mirrored camera preview in your notch.</string>
+	<string>Show a live mirrored preview and take photos when you press Capture.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright (c) 2026 Nucizz. MIT License.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save photos you take with the Camera tab to your Photos library.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Show your due reminders in your notch. Ordinary Notch does not edit reminders.</string>
 </dict>

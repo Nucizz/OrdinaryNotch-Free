@@ -17,6 +17,7 @@ struct MusicPlaybackState: Equatable {
     var sourceIdentifier: String? = nil
     var sourceIcon: NSImage? = nil
     var outputName: String? = nil
+    var outputSymbol: String = "speaker.wave.2.fill"
 }
 
 @MainActor
@@ -25,6 +26,7 @@ protocol MusicServing: AnyObject {
     func refresh()
     func updatePosition()
     func command(_ command: String)
+    func seek(to seconds: Double)
     func stop()
 }
 
@@ -59,10 +61,13 @@ final class MusicService: MusicServing {
     private var busy = false
     private var artURL: String?
     private var sourceID: String?
+    private var seekGeneration = UUID()
     private let queue = DispatchQueue(label: "ordinary.music")
 
     func refresh() {
-        state.outputName = AudioOutput.currentName()
+        let output = AudioOutput.current()
+        state.outputName = output?.name
+        state.outputSymbol = output?.symbol ?? "speaker.wave.2.fill"
         usesSystemPlayer = nowPlaying.start { [weak self] result in
             guard let self else { return }
             switch result {
@@ -166,6 +171,41 @@ final class MusicService: MusicServing {
     }
     func stop() { nowPlaying.stop() }
 
+    func seek(to seconds: Double) {
+        guard hasTrack, seconds.isFinite, duration.isFinite, duration > 0 else { return }
+        let target = min(duration, max(0, seconds))
+        let track = (state.sourceIdentifier, state.title, state.artist, state.album)
+        let previousTimeline = timeline
+        let token = UUID()
+        seekGeneration = token
+        let completion: @MainActor (Bool) -> Void = { [weak self] success in
+            guard let self, self.hasTrack, self.seekGeneration == token,
+                  (self.state.sourceIdentifier, self.state.title, self.state.artist, self.state.album) == track else { return }
+            self.error = success ? nil : "The current player could not seek to that position."
+            if !success {
+                self.timeline = previousTimeline
+                self.updatePosition()
+            }
+        }
+        if usesSystemPlayer {
+            timeline.seek(to: target, at: Date())
+            updatePosition()
+            nowPlaying.seek(to: target, completion: completion)
+        } else {
+            guard let id = state.sourceIdentifier, ["com.spotify.client", "com.apple.Music"].contains(id),
+                  NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == id }) else { return }
+            timeline.seek(to: target, at: Date())
+            updatePosition()
+            queue.async {
+                var error: NSDictionary?
+                let script = NSAppleScript(source: "tell application id \"\(id)\" to set player position to \(target)")
+                script?.executeAndReturnError(&error)
+                let success = script != nil && error == nil
+                Task { @MainActor in completion(success) }
+            }
+        }
+    }
+
     private func loadMusicArtwork(key: String) {
         guard artURL != key else { return }
         artURL = key; artwork = nil
@@ -188,18 +228,23 @@ final class MusicService: MusicServing {
         }
     }
     func command(_ command: String) {
-        guard ["playpause", "next track", "previous track"].contains(command), hasTrack else { return }
+        guard NowPlayingClient.commandNumber(command) != nil, hasTrack || command == "pause" else { return }
         if usesSystemPlayer {
             nowPlaying.send(command) { [weak self] success in
                 self?.error = success ? nil : "The current player could not accept that command."
             }
             return
         }
-        let id = source == "Spotify" ? "com.spotify.client" : "com.apple.Music"
-        guard NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == id }) else { return }
+        let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+        let candidates = command == "pause" ? ["com.spotify.client", "com.apple.Music"]
+            : [source == "Spotify" ? "com.spotify.client" : "com.apple.Music"]
+        let targets = candidates.filter { running.contains($0) }
+        guard !targets.isEmpty else { return }
         queue.async { [weak self] in
-            var error: NSDictionary?
-            NSAppleScript(source: "tell application id \"\(id)\" to \(command)")?.executeAndReturnError(&error)
+            for id in targets {
+                var error: NSDictionary?
+                NSAppleScript(source: "tell application id \"\(id)\" to \(command)")?.executeAndReturnError(&error)
+            }
             Task { @MainActor in self?.refresh() }
         }
     }

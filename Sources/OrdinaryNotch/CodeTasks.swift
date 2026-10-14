@@ -41,9 +41,10 @@ struct CodeDashboard: Equatable {
     var selection: CodeSelection? = nil { didSet { rebuild() } }
     var account: CodeAccountFilter = .personal
     var profileIDs: [CodeAccount: String] = [:]
+    var monitoringAvailable: Bool
     func selecting(_ choice: CodeSelection, account: CodeAccountFilter = .personal, profileID: String? = nil) -> Self {
         let allowed = profileID.map { [$0] } ?? account.accounts.compactMap { profileIDs[$0] }
-        return Self(tasks: tasks.filter { choice.includes($0.provider) && ($0.provider != .codex || allowed.isEmpty || allowed.contains($0.profileID ?? "")) }, selection: choice, account: account, profileIDs: profileIDs)
+        return Self(tasks: tasks.filter { choice.includes($0.provider) && ($0.provider != .codex || allowed.isEmpty || allowed.contains($0.profileID ?? "")) }, selection: choice, account: account, profileIDs: profileIDs, monitoringAvailable: monitoringAvailable)
     }
     func account(for task: CodeTask) -> CodeAccount? {
         task.provider == .claude ? task.account : profileIDs.first { $0.value == task.profileID }?.key
@@ -56,7 +57,7 @@ struct CodeDashboard: Equatable {
             return task.account == channel.account
         }
         return Self(tasks: matches, selection: channel.provider == .codex ? .codex : .claude,
-                    account: .personal, profileIDs: profileIDs)
+                    account: .personal, profileIDs: profileIDs, monitoringAvailable: monitoringAvailable)
     }
     func usage(for account: CodeAccount) -> CodexUsage? {
         guard let profileID = profileIDs[account] else { return self.account.accounts == [account] ? usage : nil }
@@ -67,7 +68,8 @@ struct CodeDashboard: Equatable {
     private(set) var provider: CodeProvider = .codex
     private(set) var ordered: [CodeTask] = []
     private var compactTask: CodeTask?
-    init(tasks: [CodeTask] = [], selection: CodeSelection? = nil, account: CodeAccountFilter = .personal, profileIDs: [CodeAccount: String] = [:]) {
+    init(tasks: [CodeTask] = [], selection: CodeSelection? = nil, account: CodeAccountFilter = .personal, profileIDs: [CodeAccount: String] = [:], monitoringAvailable: Bool = false) {
+        self.monitoringAvailable = monitoringAvailable
         self.tasks = tasks; self.selection = selection; self.account = account; self.profileIDs = profileIDs
         rebuild()
     }
@@ -97,7 +99,12 @@ struct CodeDashboard: Equatable {
         }
         if compactTask == nil { compactTask = ordered.first { $0.activity.state == "complete" } }
     }
-    func compactActivity(at now: Date) -> CodexActivity? { compactTask?.activity }
+    private func compactTask(at now: Date) -> CodeTask? {
+        if compactTask?.activity.needsInput == true { return compactTask }
+        return ordered.first { $0.activity.isControllingComputer(at: now) } ?? compactTask
+    }
+    func compactActivity(at now: Date) -> CodexActivity? { compactTask(at: now)?.activity }
+    func compactProvider(at now: Date) -> CodeProvider? { compactTask(at: now)?.provider }
     var compactProvider: CodeProvider? { compactTask?.provider }
     var visible: [CodeTask] { Array(ordered.prefix(2)) }
     var primary: CodeTask? { ordered.first }
