@@ -5,6 +5,7 @@ struct NotchTabContentView: View {
     let tab: NotchTab
     @ObservedObject var model: NotchViewModel
     var previewCamera: CameraViewModel?
+    @Environment(\.notchIsPreview) private var isPreview
     var body: some View {
         switch tab {
         case .overview:
@@ -14,11 +15,11 @@ struct NotchTabContentView: View {
                 AgendaView(agenda: model.agenda, full: false).frame(width: model.isIsland ? 160 : NotchGeometry.detailSidebarWidth)
             }
         case .focus:
-            FocusView(clock: model.clock, preferences: model.preferences, now: model.now, visible: model.expanded)
+            FocusView(clock: model.clock, preferences: model.preferences, now: model.now, visible: isPreview || model.expanded)
         case .shelf: FileShelfView(model: model.fileShelf)
         case .codex:
             CodeLayoutView(channels: model.codeChannels, dashboard: model.codeDashboard, now: model.now,
-                visible: model.expanded, openTask: model.codexMonitor.openTask,
+                visible: isPreview || model.expanded, openTask: model.codexMonitor.openTask,
                 openProvider: model.openCodeProvider, navigationError: model.codexMonitor.navigationError)
         case .mirror: MirrorView(camera: previewCamera ?? model.camera, openPhotoBooth: model.openPhotoBooth)
         case .fans: FanTabView(service: model.fans)
